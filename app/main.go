@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/header"
 	"net"
 )
 
@@ -40,9 +41,16 @@ func main() {
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
 		// Create an empty response
-		response := []byte{0}
+		hed := header.Header{
+			ID: [2]byte{4, 210},
+		}
+		hed.SetQRFlag(true)
+		marshalledHeader, err := hed.Marshal()
+		if err != nil {
+			fmt.Println("Error marshalling header:", err)
+		}
 
-		_, err = udpConn.WriteToUDP(response, source)
+		_, err = udpConn.WriteToUDP(marshalledHeader, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
