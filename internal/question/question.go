@@ -241,3 +241,87 @@ func (q *Question) MarshalName() ([]byte, error) {
 
 	return buf, nil
 }
+
+// Unmarshal parses a DNS question from raw binary data
+func Unmarshal(data []byte) (Question, int, error) {
+	const typeAndClassBytes int = 4
+	const uintSixteenBytes int = 2
+	q := Question{}
+
+	name, bytesRead, err := unmarshalName(data)
+	if err != nil {
+		return Question{}, 0, err
+	}
+	q.Name = name
+
+	if len(data) < bytesRead+typeAndClassBytes {
+		return Question{}, 0, errors.New("incomplete question: not enough bytes for type and class")
+	}
+
+	q.Type = Type(binary.BigEndian.Uint16(data[bytesRead : bytesRead+uintSixteenBytes]))
+	bytesRead += uintSixteenBytes
+
+	q.Class = Class(binary.BigEndian.Uint16(data[bytesRead : bytesRead+uintSixteenBytes]))
+	bytesRead += uintSixteenBytes
+
+	return q, bytesRead, nil
+}
+
+// unmarshalName decodes a domain name from DNS packet format
+// Returns the domain name, number of bytes read, and any error
+func unmarshalName(data []byte) (string, int, error) {
+	if len(data) == 0 {
+		return "", 0, errors.New("empty data")
+	}
+
+	var (
+		labels    []string
+		bytesRead int
+	)
+
+	for {
+		if bytesRead >= len(data) {
+			return "", 0, errors.New("malformed domain name: no terminating zero byte")
+		}
+
+		labelLength := int(data[bytesRead])
+		bytesRead++
+
+		if labelLength == 0 {
+			break
+		}
+
+		if labelLength > MaxLabelLength {
+			return "", 0, ErrLabelTooLong
+		}
+
+		if bytesRead+labelLength > len(data) {
+			return "", 0, errors.New("malformed domain name: label exceeds packet bounds")
+		}
+
+		label := string(data[bytesRead : bytesRead+labelLength])
+		labels = append(labels, label)
+		bytesRead += labelLength
+	}
+
+	// Combine labels into a domain name
+	domainName := strings.Join(labels, ".")
+
+	// Validate the domain name length
+	if len(domainName) > MaxDomainNameLength {
+		return "", 0, ErrDomainNameTooLong
+	}
+
+	return domainName, bytesRead, nil
+}
+
+// UnmarshalFromReader reads and parses a Question from a binary reader
+func (q *Question) UnmarshalFromReader(data []byte) (int, error) {
+	question, bytesRead, err := Unmarshal(data)
+	if err != nil {
+		return 0, err
+	}
+
+	*q = question
+	return bytesRead, nil
+}
