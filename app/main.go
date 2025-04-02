@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/codecrafters-io/dns-server-starter-go/internal/header"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/question"
 	"net"
 )
 
@@ -45,12 +46,28 @@ func main() {
 			ID: [2]byte{4, 210},
 		}
 		hed.SetQRFlag(true)
+		hed.SetQDCOUNT(uint16(1))
+
 		marshalledHeader, err := hed.Marshal()
 		if err != nil {
 			fmt.Println("Error marshalling header:", err)
 		}
 
-		_, err = udpConn.WriteToUDP(marshalledHeader, source)
+		q := question.Question{
+			Name:  "codecrafters.io",
+			Type:  question.A,  // A record (1)
+			Class: question.IN, // IN class (1)
+		}
+
+		marshalledQuestion, err := q.Marshal()
+		if err != nil {
+			fmt.Println("Error marshalling question:", err)
+			continue
+		}
+		
+		response := append(marshalledHeader, marshalledQuestion...)
+
+		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
