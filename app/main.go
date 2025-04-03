@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/DNS_Class"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/DNS_Type"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/answer"
 	"github.com/codecrafters-io/dns-server-starter-go/internal/header"
 	"github.com/codecrafters-io/dns-server-starter-go/internal/question"
 	"net"
@@ -41,12 +44,31 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
+		h, err := header.Unmarshal([]byte(receivedData[:12]))
+		if err != nil {
+			fmt.Println("Failed to unmarshal header:", err)
+		}
+		fmt.Printf("Header: %+v\n", h)
+
+		qq, readB, err := question.Unmarshal([]byte(receivedData[12:]))
+		if err != nil {
+			fmt.Println("Failed to unmarshal question:", err)
+		}
+		fmt.Printf("Question: %+v\n", qq)
+
+		aa, _, err := answer.Unmarshal([]byte(receivedData[readB:]))
+		if err != nil {
+			fmt.Println("Failed to unmarshal answer:", err)
+		}
+		fmt.Printf("Answer: %+v\n", aa)
+
 		// Create an empty response
 		hed := header.Header{
 			ID: [2]byte{4, 210},
 		}
 		hed.SetQRFlag(true)
 		hed.SetQDCOUNT(uint16(1))
+		hed.SetANCOUNT(1)
 
 		marshalledHeader, err := hed.Marshal()
 		if err != nil {
@@ -55,8 +77,8 @@ func main() {
 
 		q := question.Question{
 			Name:  "codecrafters.io",
-			Type:  question.A,  // A record (1)
-			Class: question.IN, // IN class (1)
+			Type:  DNS_Type.A,   // A record (1)
+			Class: DNS_Class.IN, // IN class (1)
 		}
 
 		marshalledQuestion, err := q.Marshal()
@@ -64,8 +86,19 @@ func main() {
 			fmt.Println("Error marshalling question:", err)
 			continue
 		}
-		
 		response := append(marshalledHeader, marshalledQuestion...)
+		a := answer.Answer{}
+		a.SetName("codecrafters.io")
+		a.SetType(DNS_Type.A)
+		a.SetClass(DNS_Class.IN)
+		a.SetTTL(60)
+		a.SetRDATAToARecord(net.IP{8, 8, 8, 8})
+
+		marshalledAnswer, err := a.Marshal()
+		if err != nil {
+			fmt.Println("Error marshalling answer:", err)
+		}
+		response = append(response, marshalledAnswer...)
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
