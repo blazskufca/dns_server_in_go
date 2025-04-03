@@ -64,11 +64,24 @@ func main() {
 
 		// Create an empty response
 		hed := header.Header{
-			ID: [2]byte{4, 210},
+			ID: h.ID,
 		}
 		hed.SetQRFlag(true)
-		hed.SetQDCOUNT(uint16(1))
+		hed.SetOpcode(h.GetOpcode())
+		hed.SetAA(false)
+		hed.SetTC(false)
+		hed.SetRD(h.IsRD())
+		hed.SetRA(false)
+		hed.SetZ(0)
+		if h.GetOpcode() == header.Query {
+			hed.SetRCODE(header.NoError)
+		} else {
+			hed.SetRCODE(header.NotImplemented)
+		}
+		hed.SetQDCOUNT(h.GetQDCOUNT())
 		hed.SetANCOUNT(1)
+		hed.SetNSCOUNT(h.GetNSCOUNT())
+		hed.SetARCOUNT(h.GetARCOUNT())
 
 		marshalledHeader, err := hed.Marshal()
 		if err != nil {
