@@ -50,17 +50,11 @@ func main() {
 		}
 		fmt.Printf("Header: %+v\n", h)
 
-		qq, readB, err := question.Unmarshal([]byte(receivedData[12:]))
+		qq, _, err := question.Unmarshal([]byte(receivedData[12:]))
 		if err != nil {
 			fmt.Println("Failed to unmarshal question:", err)
 		}
 		fmt.Printf("Question: %+v\n", qq)
-
-		aa, _, err := answer.Unmarshal([]byte(receivedData[readB:]))
-		if err != nil {
-			fmt.Println("Failed to unmarshal answer:", err)
-		}
-		fmt.Printf("Answer: %+v\n", aa)
 
 		// Create an empty response
 		hed := header.Header{
@@ -88,11 +82,11 @@ func main() {
 			fmt.Println("Error marshalling header:", err)
 		}
 
-		q := question.Question{
-			Name:  "codecrafters.io",
-			Type:  DNS_Type.A,   // A record (1)
-			Class: DNS_Class.IN, // IN class (1)
-		}
+		q := question.Question{}
+
+		q.SetName(qq.Name)
+		q.SetType(DNS_Type.A)
+		q.SetClass(DNS_Class.IN)
 
 		marshalledQuestion, err := q.Marshal()
 		if err != nil {
@@ -101,7 +95,7 @@ func main() {
 		}
 		response := append(marshalledHeader, marshalledQuestion...)
 		a := answer.Answer{}
-		a.SetName("codecrafters.io")
+		a.SetName(q.Name)
 		a.SetType(DNS_Type.A)
 		a.SetClass(DNS_Class.IN)
 		a.SetTTL(60)
