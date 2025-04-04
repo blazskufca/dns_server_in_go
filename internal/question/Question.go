@@ -56,8 +56,8 @@ func (q *Question) SetClass(class DNS_Class.Class) {
 	q.Class = class
 }
 
-// Marshal the Question into a byte slice.
-func (q *Question) Marshal() ([]byte, error) {
+// MarshalBinary the Question into a byte slice.
+func (q *Question) MarshalBinary() ([]byte, error) {
 
 	nameBytes, err := utils.EncodeDomainNameToLabel(q.Name)
 	if err != nil {
@@ -99,15 +99,4 @@ func Unmarshal(data []byte) (Question, int, error) {
 	bytesRead += uintSixteenBytes
 
 	return q, bytesRead, nil
-}
-
-// UnmarshalFromReader reads and parses a Question from a binary reader
-func (q *Question) UnmarshalFromReader(data []byte) (int, error) {
-	question, bytesRead, err := Unmarshal(data)
-	if err != nil {
-		return 0, err
-	}
-
-	*q = question
-	return bytesRead, nil
 }

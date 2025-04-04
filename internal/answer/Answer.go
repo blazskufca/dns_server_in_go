@@ -39,6 +39,11 @@ func (a *Answer) SetName(name string) {
 	a.Name = name
 }
 
+// GetName get the Answer.Name and returns it to the caller.
+func (a *Answer) GetName() string {
+	return a.Name
+}
+
 // SetType sets the Answer.Type which represents type.
 func (a *Answer) SetType(t DNS_Type.Type) {
 	a.Type = t
@@ -184,8 +189,8 @@ func (a *Answer) SetRDATAToSOARecord(
 	return nil
 }
 
-// Marshal serializes an Answer into a byte slice according to DNS protocol
-func (a *Answer) Marshal() ([]byte, error) {
+// MarshalBinary serializes an Answer into a byte slice according to DNS protocol
+func (a *Answer) MarshalBinary() ([]byte, error) {
 	nameBytes, err := utils.EncodeDomainNameToLabel(a.Name)
 	if err != nil {
 		return nil, err

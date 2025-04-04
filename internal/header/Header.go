@@ -314,8 +314,8 @@ func (h *Header) SetARCOUNT(arcount uint16) { // Fixed: parameter name corrected
 	binary.BigEndian.PutUint16(h.ARCOUNT[:], arcount)
 }
 
-// Marshal marshals a DNS Header into a 12-byte slice
-func (h *Header) Marshal() ([]byte, error) {
+// MarshalBinary marshals a DNS Header into a 12-byte slice
+func (h *Header) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, 12)
 
 	copy(buf[0:2], h.ID[:])
