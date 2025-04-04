@@ -68,49 +68,85 @@ func ValidateName(name string) error {
 // UnmarshalName decodes a domain name from DNS packet format
 // Returns the domain name, number of bytes read, and any error
 func UnmarshalName(data []byte) (string, int, error) {
-	if len(data) == 0 {
-		return "", 0, errors.New("empty data")
-	}
-
-	var (
-		labels    []string
-		bytesRead int
+	const (
+		pointerMarker byte   = 0b11000000 // First two bits set indicate a compression pointer per the RFC 1035 section 4.1.4
+		pointerMask   uint16 = 0b00111111 // Removes the first two bits, which again indicate following is a pointer and not a normal label
+		maxPointers          = 100        // Maximum number of pointers to follow to prevent infinite loops in malformed data
 	)
 
-	for {
-		if bytesRead >= len(data) {
-			return "", 0, errors.New("malformed domain name: no terminating zero byte")
+	if len(data) == 0 {
+		return "", 0, errors.New("empty data for domain name")
+	}
+
+	var name strings.Builder
+	var bytesRead int
+	var pointerCount int
+	followedPointer := false
+	originalOffset := 0
+
+	for offset := 0; offset < len(data); {
+		if bytesRead == 0 { // Keep track of where we started in the original data
+			originalOffset = offset
 		}
 
-		labelLength := int(data[bytesRead])
-		bytesRead++
+		currentByte := data[offset] // Get the current byte (either a length byte or start of a pointer)
 
-		if labelLength == 0 {
+		if (currentByte & pointerMarker) == pointerMarker {
+			if offset+1 >= len(data) {
+				return "", 0, errors.New("incomplete pointer in domain name")
+			}
+
+			pointerCount++
+			if pointerCount > maxPointers {
+				return "", 0, errors.New("too many compression pointers: possible loop detected")
+			}
+
+			// Calculate the 14-bit offset where the actual data is located:
+			// 1. Take the first byte, remove the pointer marker bits, and shift left 8 bits
+			// 2. Combine with the second byte to get the full 14-bit offset
+			firstByteBits := (uint16(currentByte) & pointerMask) << 8
+			secondByteBits := uint16(data[offset+1])
+			pointerOffset := int(firstByteBits | secondByteBits)
+
+			// First time we encounter a pointer, record the bytes read from original data
+			if !followedPointer {
+				bytesRead = offset - originalOffset + 2
+				followedPointer = true
+			}
+
+			// Jump to the location specified by the pointer
+			offset = pointerOffset
+			continue
+		}
+
+		labelLength := currentByte // Get the length of the current label
+
+		if labelLength == 0 { // Zero-length label marks the end of the domain name
+
+			if !followedPointer { // If we never followed a pointer, calculate total bytes read
+				bytesRead = offset - originalOffset + 1 // +1 for the terminating zero byte
+			}
 			break
 		}
 
-		if labelLength > MaxLabelLength {
-			return "", 0, ErrLabelTooLong
+		if offset+int(labelLength)+1 > len(data) {
+			return "", 0, errors.New("domain name label exceeds data length")
 		}
 
-		if bytesRead+labelLength > len(data) {
-			return "", 0, errors.New("malformed domain name: label exceeds packet bounds")
+		if name.Len() > 0 {
+			name.WriteByte('.')
 		}
 
-		label := string(data[bytesRead : bytesRead+labelLength])
-		labels = append(labels, label)
-		bytesRead += labelLength
+		name.Write(data[offset+1 : offset+1+int(labelLength)]) // Extract the label text (the bytes immediately following the length byte)
+
+		offset += int(labelLength) + 1 // Move offset to the next label
+
+		if !followedPointer { // If we haven't followed a pointer yet, update bytesRead
+			bytesRead = offset - originalOffset
+		}
 	}
 
-	// Combine labels into a domain name
-	domainName := strings.Join(labels, ".")
-
-	// Validate the domain name length
-	if len(domainName) > MaxDomainNameLength {
-		return "", 0, ErrDomainNameTooLong
-	}
-
-	return domainName, bytesRead, nil
+	return name.String(), bytesRead, nil
 }
 
 // SplitStringIntoChunks is a helper function to split a string into chunks

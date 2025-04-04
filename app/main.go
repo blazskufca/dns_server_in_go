@@ -14,10 +14,7 @@ import (
 var _ = net.ListenUDP
 
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
-	//
-	//Uncomment this block to pass the first stage
 
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
@@ -41,71 +38,84 @@ func main() {
 			break
 		}
 
-		receivedData := string(buf[:size])
-		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
+		fmt.Printf("Received %d bytes from %s\n", size, source)
 
-		h, err := header.Unmarshal([]byte(receivedData[:12]))
+		h, err := header.Unmarshal(buf[:12])
 		if err != nil {
 			fmt.Println("Failed to unmarshal header:", err)
+			continue
 		}
 		fmt.Printf("Header: %+v\n", h)
 
-		qq, _, err := question.Unmarshal([]byte(receivedData[12:]))
-		if err != nil {
-			fmt.Println("Failed to unmarshal question:", err)
-		}
-		fmt.Printf("Question: %+v\n", qq)
+		questions := make([]question.Question, 0, h.GetQDCOUNT())
+		offset := 12
 
-		// Create an empty response
-		hed := header.Header{
+		for i := 0; i < int(h.GetQDCOUNT()); i++ {
+			q, bytesRead, err := question.Unmarshal(buf[offset:])
+			if err != nil {
+				fmt.Println("Failed to unmarshal question:", err)
+				continue
+			}
+			questions = append(questions, q)
+			offset += bytesRead
+			fmt.Printf("Question %d: %+v\n", i+1, q)
+		}
+
+		responseHeader := header.Header{
 			ID: h.ID,
 		}
-		hed.SetQRFlag(true)
-		hed.SetOpcode(h.GetOpcode())
-		hed.SetAA(false)
-		hed.SetTC(false)
-		hed.SetRD(h.IsRD())
-		hed.SetRA(false)
-		hed.SetZ(0)
-		if h.GetOpcode() == header.Query {
-			hed.SetRCODE(header.NoError)
-		} else {
-			hed.SetRCODE(header.NotImplemented)
-		}
-		hed.SetQDCOUNT(h.GetQDCOUNT())
-		hed.SetANCOUNT(1)
-		hed.SetNSCOUNT(h.GetNSCOUNT())
-		hed.SetARCOUNT(h.GetARCOUNT())
+		responseHeader.SetQRFlag(true)
+		responseHeader.SetOpcode(h.GetOpcode())
+		responseHeader.SetAA(false)
+		responseHeader.SetTC(false)
+		responseHeader.SetRD(h.IsRD())
+		responseHeader.SetRA(false)
+		responseHeader.SetZ(0)
 
-		marshalledHeader, err := hed.Marshal()
+		if h.GetOpcode() == header.Query {
+			responseHeader.SetRCODE(header.NoError)
+		} else {
+			responseHeader.SetRCODE(header.NotImplemented)
+		}
+
+		responseHeader.SetQDCOUNT(uint16(len(questions)))
+		responseHeader.SetANCOUNT(uint16(len(questions)))
+		responseHeader.SetNSCOUNT(0)
+		responseHeader.SetARCOUNT(0)
+
+		marshalledHeader, err := responseHeader.Marshal()
 		if err != nil {
 			fmt.Println("Error marshalling header:", err)
-		}
-
-		q := question.Question{}
-
-		q.SetName(qq.Name)
-		q.SetType(DNS_Type.A)
-		q.SetClass(DNS_Class.IN)
-
-		marshalledQuestion, err := q.Marshal()
-		if err != nil {
-			fmt.Println("Error marshalling question:", err)
 			continue
 		}
-		response := append(marshalledHeader, marshalledQuestion...)
-		a := answer.Answer{}
-		a.SetName(q.Name)
-		a.SetType(DNS_Type.A)
-		a.SetClass(DNS_Class.IN)
-		a.SetTTL(60)
-		a.SetRDATAToARecord(net.IP{8, 8, 8, 8})
 
-		marshalledAnswer, err := a.Marshal()
-		if err != nil {
-			fmt.Println("Error marshalling answer:", err)
+		response := marshalledHeader
+
+		for _, q := range questions {
+			marshalledQuestion, err := q.Marshal()
+			if err != nil {
+				fmt.Println("Error marshalling question:", err)
+				continue
+			}
+			response = append(response, marshalledQuestion...)
 		}
-		response = append(response, marshalledAnswer...)
+
+		for _, q := range questions {
+			a := answer.Answer{}
+			a.SetName(q.Name)
+			a.SetType(DNS_Type.A)
+			a.SetClass(DNS_Class.IN)
+			a.SetTTL(60)
+
+			a.SetRDATAToARecord(net.IP{8, 8, 8, 8})
+
+			marshalledAnswer, err := a.Marshal()
+			if err != nil {
+				fmt.Println("Error marshalling answer:", err)
+				continue
+			}
+			response = append(response, marshalledAnswer...)
+		}
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
