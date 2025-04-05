@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -66,88 +67,99 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// UnmarshalName decodes a domain name from DNS packet format
-// Returns the domain name, number of bytes read, and any error
-func UnmarshalName(data []byte) (string, int, error) {
+// UnmarshalName unmarshal Names/labels with pointer compression.
+func UnmarshalName(buffer []byte, offset int, fullPacket []byte) (string, int, error) {
 	const (
-		pointerMarker byte   = 0b11000000 // First two bits set indicate a compression pointer per the RFC 1035 section 4.1.4
-		pointerMask   uint16 = 0b00111111 // Removes the first two bits, which again indicate following is a pointer and not a normal label
-		maxPointers          = 100        // Maximum number of pointers to follow to prevent infinite loops in malformed data
+		pointerMarker byte   = 0b11000000
+		pointerMask   uint16 = 0b00111111
+		maxPointers          = 10
 	)
 
-	if len(data) == 0 {
-		return "", 0, errors.New("empty data for domain name")
+	if offset < 0 || offset >= len(buffer) {
+		return "", 0, fmt.Errorf("initial offset %d out of bounds for buffer length %d", offset, len(buffer))
 	}
 
 	var name strings.Builder
-	var bytesRead int
-	var pointerCount int
-	followedPointer := false
-	originalOffset := 0
+	startOffset := offset
+	bytesConsumed := 0
+	pointersFollowed := 0   // Count pointers followed from the initial offset to detect loops
+	jumped := false         // Tracks if we have jumped using a pointer
+	currentBuffer := buffer // Keep track of which buffer we're currently working with
 
-	for offset := 0; offset < len(data); {
-		if bytesRead == 0 { // Keep track of where we started in the original data
-			originalOffset = offset
+	for {
+		if offset < 0 || offset >= len(currentBuffer) {
+			return "", 0, fmt.Errorf("offset %d out of bounds during parsing (buffer length %d)", offset, len(currentBuffer))
 		}
 
-		currentByte := data[offset] // Get the current byte (either a length byte or start of a pointer)
+		currentByte := currentBuffer[offset]
 
-		if (currentByte & pointerMarker) == pointerMarker {
-			if offset+1 >= len(data) {
-				return "", 0, errors.New("incomplete pointer in domain name")
+		if (currentByte & pointerMarker) == pointerMarker { // Pointer (2 most significant bits are set)
+			if offset+1 >= len(currentBuffer) {
+				return "", 0, errors.New("incomplete pointer at end of buffer")
 			}
 
-			pointerCount++
-			if pointerCount > maxPointers {
-				return "", 0, errors.New("too many compression pointers: possible loop detected")
+			if !jumped {
+				bytesConsumed = offset - startOffset + 2
+				jumped = true
 			}
 
-			// Calculate the 14-bit offset where the actual data is located:
-			// 1. Take the first byte, remove the pointer marker bits, and shift left 8 bits
-			// 2. Combine with the second byte to get the full 14-bit offset
-			firstByteBits := (uint16(currentByte) & pointerMask) << 8
-			secondByteBits := uint16(data[offset+1])
-			pointerOffset := int(firstByteBits | secondByteBits)
+			// Calculate the 14-bit offset from the start of the full packet
+			// The offset is the lower 6 bits of the first byte (cleared of pointer bits)
+			// followed by the entire second byte
+			pointerOffset := int(((uint16(currentByte) & pointerMask) << 8) | uint16(currentBuffer[offset+1]))
 
-			// First time we encounter a pointer, record the bytes read from original data
-			if !followedPointer {
-				bytesRead = offset - originalOffset + 2
-				followedPointer = true
+			if pointerOffset < 0 || pointerOffset >= len(fullPacket) {
+				return "", 0, fmt.Errorf("pointer offset %d out of bounds (full packet length %d)", pointerOffset, len(fullPacket))
 			}
 
-			// Jump to the location specified by the pointer
+			// Follow the pointer by updating the buffer and offset
+			currentBuffer = fullPacket // Always use the full packet when following pointers
 			offset = pointerOffset
-			continue
-		}
-
-		labelLength := currentByte // Get the length of the current label
-
-		if labelLength == 0 { // Zero-length label marks the end of the domain name
-
-			if !followedPointer { // If we never followed a pointer, calculate total bytes read
-				bytesRead = offset - originalOffset + 1 // +1 for the terminating zero byte
+			pointersFollowed++
+			if pointersFollowed > maxPointers {
+				return "", 0, errors.New("too many pointers followed, potential loop detected")
 			}
-			break
-		}
+			continue
 
-		if offset+int(labelLength)+1 > len(data) {
-			return "", 0, errors.New("domain name label exceeds data length")
-		}
+		} else {
+			labelLength := int(currentByte)
 
-		if name.Len() > 0 {
-			name.WriteByte('.')
-		}
+			if labelLength > MaxLabelLength {
+				return "", 0, ErrLabelTooLong
+			}
 
-		name.Write(data[offset+1 : offset+1+int(labelLength)]) // Extract the label text (the bytes immediately following the length byte)
+			offset++
 
-		offset += int(labelLength) + 1 // Move offset to the next label
+			if labelLength == 0 {
+				if !jumped {
+					bytesConsumed = offset - startOffset
+				}
+				break
+			}
 
-		if !followedPointer { // If we haven't followed a pointer yet, update bytesRead
-			bytesRead = offset - originalOffset
+			if offset+labelLength > len(currentBuffer) {
+				return "", 0, fmt.Errorf("label length %d exceeds buffer bounds at offset %d (buffer length %d)", labelLength, offset, len(currentBuffer))
+			}
+
+			if name.Len() > 0 {
+				name.WriteByte('.')
+			}
+			name.Write(currentBuffer[offset : offset+labelLength])
+			offset += labelLength
+
+			if !jumped {
+				bytesConsumed = offset - startOffset
+			}
 		}
 	}
 
-	return name.String(), bytesRead, nil
+	// Handle root domain (.) which is a single 0 byte
+	if name.Len() == 0 && bytesConsumed == 1 && buffer[startOffset] == 0 {
+		return ".", 1, nil
+	}
+
+	// Return the assembled name and the number of bytes consumed from the startOffset
+	return name.String(), bytesConsumed, nil
 }
 
 // SplitStringIntoChunks is a helper function to split a string into chunks

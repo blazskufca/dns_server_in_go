@@ -77,12 +77,12 @@ func (q *Question) MarshalBinary() ([]byte, error) {
 }
 
 // Unmarshal parses a DNS question from raw binary data
-func Unmarshal(data []byte) (Question, int, error) {
+func Unmarshal(data []byte, fullPacket []byte) (Question, int, error) {
 	const typeAndClassBytes int = 4
 	const uintSixteenBytes int = 2
 	q := Question{}
 
-	name, bytesRead, err := utils.UnmarshalName(data)
+	name, bytesRead, err := utils.UnmarshalName(data, 0, fullPacket)
 	if err != nil {
 		return Question{}, 0, err
 	}

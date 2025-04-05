@@ -22,9 +22,6 @@ type Message struct {
 // UnmarshalBinary unmarshalls the Message from binary format which was sent across the wire.
 // It fulfills the encoding.BinaryUnmarshaler interface.
 func (msg *Message) UnmarshalBinary(buf []byte) error {
-	if len(buf) > 512 {
-		return errors.New("message can not be larger than 512 bytes per RFC 1035")
-	}
 	curOffset := 12
 
 	unmarshalledHeader, err := header.Unmarshal(buf[:curOffset])
@@ -38,7 +35,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 
 	msg.Questions = make([]question.Question, msg.Header.GetQDCOUNT())
 	for i := 0; i < int(msg.Header.GetQDCOUNT()); i++ {
-		q, bytesRead, err := question.Unmarshal(buf[curOffset:])
+		q, bytesRead, err := question.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
 			fmt.Println("Failed to unmarshal question:", err)
 			continue
@@ -52,7 +49,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		if curOffset >= len(buf) {
 			break
 		}
-		ans, bytesRead, err := RR.Unmarshal(buf[curOffset:])
+		ans, bytesRead, err := RR.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
 			fmt.Println("Failed to unmarshal answer:", err)
 			break
@@ -66,7 +63,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		if curOffset >= len(buf) {
 			break
 		}
-		auth, bytesRead, err := RR.Unmarshal(buf[curOffset:])
+		auth, bytesRead, err := RR.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
 			fmt.Println("Failed to unmarshal authority:", err)
 			break
@@ -80,7 +77,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		if curOffset >= len(buf) {
 			break
 		}
-		add, bytesRead, err := RR.Unmarshal(buf[curOffset:])
+		add, bytesRead, err := RR.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
 			fmt.Println("Failed to unmarshal additional:", err)
 			break
