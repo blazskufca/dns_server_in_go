@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/answer"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/RR"
 	"github.com/codecrafters-io/dns-server-starter-go/internal/header"
 	"github.com/codecrafters-io/dns-server-starter-go/internal/question"
 	"log/slog"
@@ -100,7 +100,7 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 		mergedResponse := Message{
 			Header:    msg.Header,
 			Questions: msg.Questions,
-			Answers:   make([]answer.Answer, 0),
+			Answers:   make([]RR.RR, 0),
 		}
 
 		mergedResponse.Header.SetQRFlag(true)
@@ -112,10 +112,30 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 				Header:    msg.Header,
 				Questions: []question.Question{q},
 			}
-			singleMsg.Header.SetQDCOUNT(1)
-			singleMsg.Header.SetANCOUNT(0)
-			singleMsg.Header.SetNSCOUNT(0)
-			singleMsg.Header.SetARCOUNT(0)
+			err = singleMsg.Header.SetQDCOUNT(1)
+			if err != nil {
+				s.logger.Error("failed to set QDCOUNT", slog.Any("error", err))
+				s.sendErrorResponse(data, addr, header.FormatError)
+				return
+			}
+			err = singleMsg.Header.SetANCOUNT(0)
+			if err != nil {
+				s.logger.Error("failed to set single ANCOUNT", slog.Any("error", err))
+				s.sendErrorResponse(data, addr, header.FormatError)
+				return
+			}
+			err = singleMsg.Header.SetNSCOUNT(0)
+			if err != nil {
+				s.logger.Error("failed to set NSCOUNT", slog.Any("error", err))
+				s.sendErrorResponse(data, addr, header.FormatError)
+				return
+			}
+			err = singleMsg.Header.SetARCOUNT(0)
+			if err != nil {
+				s.logger.Error("failed to set ARCOUNT", slog.Any("error", err))
+				s.sendErrorResponse(data, addr, header.FormatError)
+				return
+			}
 
 			queryData, err := singleMsg.MarshalBinary()
 			if err != nil {
@@ -153,7 +173,12 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 			return
 		}
 
-		mergedResponse.Header.SetANCOUNT(uint16(len(mergedResponse.Answers)))
+		err = mergedResponse.Header.SetANCOUNT(len(mergedResponse.Answers))
+		if err != nil {
+			s.logger.Error("failed to set ANCOUNT", slog.Any("error", err))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
 
 		responseData, err := mergedResponse.MarshalBinary()
 		if err != nil {
@@ -220,13 +245,29 @@ func (s *DNSServer) sendErrorResponse(data []byte, addr *net.UDPAddr, errorCode 
 	errorMsg := Message{
 		Header:    h,
 		Questions: questions,
-		Answers:   []answer.Answer{},
+		Answers:   []RR.RR{},
 	}
 
-	h.SetQDCOUNT(uint16(len(questions)))
-	h.SetANCOUNT(0)
-	h.SetNSCOUNT(0)
-	h.SetARCOUNT(0)
+	err := h.SetQDCOUNT(len(questions))
+	if err != nil {
+		s.logger.Error("failed to set QDCOUNT", slog.Any("error", err))
+		return
+	}
+	err = h.SetANCOUNT(0)
+	if err != nil {
+		s.logger.Error("failed to set ANCOUNT", slog.Any("error", err))
+		return
+	}
+	err = h.SetNSCOUNT(0)
+	if err != nil {
+		s.logger.Error("failed to set NSCOUNT", slog.Any("error", err))
+		return
+	}
+	err = h.SetARCOUNT(0)
+	if err != nil {
+		s.logger.Error("failed to set ARCOUNT", slog.Any("error", err))
+		return
+	}
 
 	responseData, err := errorMsg.MarshalBinary()
 	if err != nil {
@@ -240,6 +281,7 @@ func (s *DNSServer) sendErrorResponse(data []byte, addr *net.UDPAddr, errorCode 
 			slog.Any("error", err),
 			slog.Any("to_address", addr.String()),
 			slog.Any("error_code", errorCode))
+		return
 	} else {
 		s.logger.Info("Sent error response",
 			slog.Any("to_address", addr.String()),

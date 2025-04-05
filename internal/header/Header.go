@@ -3,6 +3,8 @@ package header
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/utils"
+	"math"
 )
 
 /*
@@ -25,35 +27,10 @@ Essentially, we have to support three different objects: Header, Question and Re
 records and questions are simply individual instances appended in a row, with no extras.
 
 The number of records in each section is provided by the header.
-
-The header structure looks as follows:
-
-| RFC Name | Descriptive Name     | Length             | Description                                                                                                                                                                         |
-| -------- | -------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ID       | Packet Identifier    | 16 bits            | A random identifier is assigned to query packets. Response packets must reply with the same id. This is needed to differentiate responses due to the stateless nature of UDP.       |
-| QR       | Query Response       | 1 bit              | 0 for queries, 1 for responses.                                                                                                                                                     |
-| OPCODE   | Operation Code       | 4 bits             | Typically always 0, see RFC1035 for details.                                                                                                                                        |
-| AA       | Authoritative Answer | 1 bit              | Set to 1 if the responding server is authoritative - that is, it "owns" - the domain queried.                                                                                       |
-| TC       | Truncated Message    | 1 bit              | Set to 1 if the message length exceeds 512 bytes. Traditionally a hint that the query can be reissued using TCP, for which the length limitation doesn't apply.                     |
-| RD       | Recursion Desired    | 1 bit              | Set by the sender of the request if the server should attempt to resolve the query recursively if it does not have an answer readily available.                                     |
-| RA       | Recursion Available  | 1 bit              | Set by the server to indicate whether or not recursive queries are allowed.                                                                                                         |
-| Z        | Reserved             | 3 bits             | Originally reserved for later use, but now used for DNSSEC queries.                                                                                                                 |
-| RCODE    | Response Code        | 4 bits             | Set by the server to indicate the status of the response, i.e. whether or not it was successful or failed, and in the latter case providing details about the cause of the failure. |
-| QDCOUNT  | Question Count       | 16 bits            | The number of entries in the Question Section                                                                                                                                       |
-| ANCOUNT  | Answer Count         | 16 bits            | The number of entries in the Answer Section                                                                                                                                         |
-| NSCOUNT  | Authority Count      | 16 bits            | The number of entries in the Authority Section                                                                                                                                      |
-| ARCOUNT  | Additional Count     | 16 bits            | The number of entries in the Additional Section                                                                                                                                     |
-
-The header section is always 12 bytes long. Integers are encoded in big-endian format.
-
-https://datatracker.ietf.org/doc/html/rfc1035#section-4.1
-
 */
 
 // Header structure follows the following pattern
 /*
-The header structure looks as follows:
-
 | RFC Name | Descriptive Name     | Length             | Description                                                                                                                                                                         |
 | -------- | -------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ID       | Packet Identifier    | 16 bits            | A random identifier is assigned to query packets. Response packets must reply with the same id. This is needed to differentiate responses due to the stateless nature of UDP.       |
@@ -69,8 +46,14 @@ The header structure looks as follows:
 | ANCOUNT  | Answer Count         | 16 bits            | The number of entries in the Answer Section                                                                                                                                         |
 | NSCOUNT  | Authority Count      | 16 bits            | The number of entries in the Authority Section                                                                                                                                      |
 | ARCOUNT  | Additional Count     | 16 bits            | The number of entries in the Additional Section
+
+The header section is always 12 bytes long. Integers are encoded in big-endian format. https://datatracker.ietf.org/doc/html/rfc1035#section-4.1
+
+Interesting tidbits from RFCs:
+- Section 5. Transport Protocol Selection of RFC 7766 https://datatracker.ietf.org/doc/html/rfc7766.txt:
+	- "Recursive server (or forwarder) implementations MUST support TCP so that they do not prevent large responses from
+		a TCP-capable server from reaching its TCP-capable clients" - Relating to TC flag in Header.Flags.
 */
-// Header structure represents a DNS packet header (12 bytes total)
 type Header struct {
 	// ID is a 16-bit identifier assigned by the program that generates any kind of query
 	ID [2]byte
@@ -96,12 +79,6 @@ type flagByte int
 const (
 	firstFlagByte flagByte = iota
 	secondFlagByte
-)
-
-const (
-	QR_Mask          byte = 0b10000000 // Mask for the QR bit
-	QR_ClearMask     byte = 0b01111111 // Mask to clear QR bit
-	Opcode_ClearMask byte = 0b00001111 // Mask to extract Opcode
 )
 
 // Opcode represents a DNS header opcode (4 bits)
@@ -150,16 +127,20 @@ func (code ResponseCode) String() string {
 
 // IsQuery returns true if the header represents a query
 func (h *Header) IsQuery() bool {
+	const QR_Mask byte = 0b10000000 // Mask for the QR bit
 	return h.Flags[firstFlagByte]&QR_Mask == 0
 }
 
 // IsResponse returns true if the header represents a response
 func (h *Header) IsResponse() bool {
+	const QR_Mask byte = 0b10000000 // Mask for the QR bit
 	return h.Flags[firstFlagByte]&QR_Mask != 0
 }
 
 // SetQRFlag sets the Query/Response flag (QR)
 func (h *Header) SetQRFlag(isResponse bool) {
+	const QR_Mask byte = 0b10000000      // Mask for the QR bit
+	const QR_ClearMask byte = 0b01111111 // Mask to clear QR bit
 	if isResponse {
 		h.Flags[firstFlagByte] |= QR_Mask
 	} else {
@@ -169,6 +150,7 @@ func (h *Header) SetQRFlag(isResponse bool) {
 
 // GetOpcode extracts the Opcode from the header flags
 func (h *Header) GetOpcode() Opcode {
+	const Opcode_ClearMask byte = 0b00001111 // Mask to extract Opcode
 	return Opcode((h.Flags[firstFlagByte] >> 3) & Opcode_ClearMask)
 }
 
@@ -255,10 +237,14 @@ func (h *Header) GetZ() uint8 {
 }
 
 // SetZ sets the Z (DNSSEC) field value
-func (h *Header) SetZ(z uint8) {
+func (h *Header) SetZ(z int) error {
+	if utils.WouldOverflowUint8(z) {
+		return fmt.Errorf("z with value %d would overflow uint8 with max range %d", z, math.MaxInt8)
+	}
 	const clearZ byte = 0b10001111
 	const zMask byte = 0b00000111
-	h.Flags[secondFlagByte] = (h.Flags[secondFlagByte] & clearZ) | ((z & zMask) << 4)
+	h.Flags[secondFlagByte] = (h.Flags[secondFlagByte] & clearZ) | ((uint8(z) & zMask) << 4)
+	return nil
 }
 
 // GetRCODE returns the Response Code
@@ -280,8 +266,12 @@ func (h *Header) GetQDCOUNT() uint16 {
 }
 
 // SetQDCOUNT sets the Question Count
-func (h *Header) SetQDCOUNT(qdcount uint16) {
-	binary.BigEndian.PutUint16(h.QDCOUNT[:], qdcount)
+func (h *Header) SetQDCOUNT(qdcount int) error {
+	if utils.WouldOverflowUint16(qdcount) {
+		return fmt.Errorf("qdcount with value %d would overflow uint16 with max range %d", qdcount, math.MaxUint16)
+	}
+	binary.BigEndian.PutUint16(h.QDCOUNT[:], uint16(qdcount))
+	return nil
 }
 
 // GetANCOUNT returns the Answer Count
@@ -290,8 +280,12 @@ func (h *Header) GetANCOUNT() uint16 {
 }
 
 // SetANCOUNT sets the Answer Count
-func (h *Header) SetANCOUNT(ancount uint16) {
-	binary.BigEndian.PutUint16(h.ANCOUNT[:], ancount)
+func (h *Header) SetANCOUNT(ancount int) error {
+	if utils.WouldOverflowUint16(ancount) {
+		return fmt.Errorf("ancount with value %d would overflow uint16 with max range %d", ancount, math.MaxUint16)
+	}
+	binary.BigEndian.PutUint16(h.ANCOUNT[:], uint16(ancount))
+	return nil
 }
 
 // GetNSCOUNT returns the Authority Record Count
@@ -300,8 +294,12 @@ func (h *Header) GetNSCOUNT() uint16 {
 }
 
 // SetNSCOUNT sets the Authority Record Count
-func (h *Header) SetNSCOUNT(nscount uint16) {
-	binary.BigEndian.PutUint16(h.NSCOUNT[:], nscount) // Fixed: now uses NSCOUNT
+func (h *Header) SetNSCOUNT(nscount int) error {
+	if utils.WouldOverflowUint16(nscount) {
+		return fmt.Errorf("nscount with value %d would overflow uint16 with max range %d", nscount, math.MaxUint16)
+	}
+	binary.BigEndian.PutUint16(h.NSCOUNT[:], uint16(nscount))
+	return nil
 }
 
 // GetARCOUNT returns the Additional Record Count
@@ -310,8 +308,12 @@ func (h *Header) GetARCOUNT() uint16 {
 }
 
 // SetARCOUNT sets the Additional Record Count
-func (h *Header) SetARCOUNT(arcount uint16) { // Fixed: parameter name corrected
-	binary.BigEndian.PutUint16(h.ARCOUNT[:], arcount)
+func (h *Header) SetARCOUNT(arcount int) error { // Fixed: parameter name corrected
+	if utils.WouldOverflowUint16(arcount) {
+		return fmt.Errorf("arcount with value %d would overflow uint16 with max range %d", arcount, math.MaxUint16)
+	}
+	binary.BigEndian.PutUint16(h.ARCOUNT[:], uint16(arcount))
+	return nil
 }
 
 // MarshalBinary marshals a DNS Header into a 12-byte slice
@@ -342,10 +344,22 @@ func Unmarshal(data []byte) (*Header, error) {
 
 	copy(h.Flags[:], data[2:4])
 
-	h.SetQDCOUNT(binary.BigEndian.Uint16(data[4:6]))
-	h.SetANCOUNT(binary.BigEndian.Uint16(data[6:8]))
-	h.SetNSCOUNT(binary.BigEndian.Uint16(data[8:10]))
-	h.SetARCOUNT(binary.BigEndian.Uint16(data[10:12]))
+	err := h.SetQDCOUNT(int(binary.BigEndian.Uint16(data[4:6])))
+	if err != nil {
+		return nil, err
+	}
+	err = h.SetANCOUNT(int(binary.BigEndian.Uint16(data[6:8])))
+	if err != nil {
+		return nil, err
+	}
+	err = h.SetNSCOUNT(int(binary.BigEndian.Uint16(data[8:10])))
+	if err != nil {
+		return nil, err
+	}
+	err = h.SetARCOUNT(int(binary.BigEndian.Uint16(data[10:12])))
+	if err != nil {
+		return nil, err
+	}
 
 	return h, nil
 }

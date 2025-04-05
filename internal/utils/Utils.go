@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"math"
 	"strings"
 )
 
@@ -169,4 +170,19 @@ func AppendUint32(data []byte, value uint32) []byte {
 		byte(value>>16),
 		byte(value>>8),
 		byte(value))
+}
+
+// WouldOverflowUint32 checks that the value of type int is within bounds for uint32 and will not over or underflow.
+func WouldOverflowUint32(value int) bool {
+	return value < 0 || value > math.MaxUint32
+}
+
+// WouldOverflowUint8 checks that the value of type int is within bounds for uint8 and will not over or underflow.
+func WouldOverflowUint8(value int) bool {
+	return value < 0 || value > math.MaxUint8
+}
+
+// WouldOverflowUint16 checks that the value of type int is within bounds for uint16 and will not over or underflow.
+func WouldOverflowUint16(value int) bool {
+	return value < 0 || value > math.MaxUint16
 }

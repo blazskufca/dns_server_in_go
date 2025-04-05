@@ -1,20 +1,26 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/answer"
+	"github.com/codecrafters-io/dns-server-starter-go/internal/RR"
+
 	"github.com/codecrafters-io/dns-server-starter-go/internal/header"
 	"github.com/codecrafters-io/dns-server-starter-go/internal/question"
 )
 
+// Message represents a DNS message.
 type Message struct {
-	Header    header.Header
-	Questions []question.Question
-	Answers   []answer.Answer
-	RawData   []byte
+	Header     header.Header
+	Questions  []question.Question
+	Answers    []RR.RR
+	Authority  []RR.RR
+	Additional []RR.RR
 }
 
+// UnmarshalBinary unmarshalls the Message from binary format which was sent across the wire.
+// It fulfills the encoding.BinaryUnmarshaler interface.
 func (msg *Message) UnmarshalBinary(buf []byte) error {
 	if len(buf) > 512 {
 		return errors.New("message can not be larger than 512 bytes per RFC 1035")
@@ -31,7 +37,6 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 	msg.Header = *unmarshalledHeader
 
 	msg.Questions = make([]question.Question, msg.Header.GetQDCOUNT())
-
 	for i := 0; i < int(msg.Header.GetQDCOUNT()); i++ {
 		q, bytesRead, err := question.Unmarshal(buf[curOffset:])
 		if err != nil {
@@ -42,12 +47,12 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		curOffset += bytesRead
 	}
 
-	msg.Answers = make([]answer.Answer, 0, msg.Header.GetANCOUNT())
+	msg.Answers = make([]RR.RR, 0, msg.Header.GetANCOUNT())
 	for i := 0; i < int(msg.Header.GetANCOUNT()); i++ {
 		if curOffset >= len(buf) {
 			break
 		}
-		ans, bytesRead, err := answer.Unmarshal(buf[curOffset:])
+		ans, bytesRead, err := RR.Unmarshal(buf[curOffset:])
 		if err != nil {
 			fmt.Println("Failed to unmarshal answer:", err)
 			break
@@ -56,10 +61,46 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		curOffset += bytesRead
 	}
 
+	msg.Authority = make([]RR.RR, 0, msg.Header.GetNSCOUNT())
+	for i := 0; i < int(msg.Header.GetNSCOUNT()); i++ {
+		if curOffset >= len(buf) {
+			break
+		}
+		auth, bytesRead, err := RR.Unmarshal(buf[curOffset:])
+		if err != nil {
+			fmt.Println("Failed to unmarshal authority:", err)
+			break
+		}
+		msg.Authority = append(msg.Authority, auth)
+		curOffset += bytesRead
+	}
+
+	msg.Additional = make([]RR.RR, 0, msg.Header.GetARCOUNT())
+	for i := 0; i < int(msg.Header.GetARCOUNT()); i++ {
+		if curOffset >= len(buf) {
+			break
+		}
+		add, bytesRead, err := RR.Unmarshal(buf[curOffset:])
+		if err != nil {
+			fmt.Println("Failed to unmarshal additional:", err)
+			break
+		}
+		msg.Additional = append(msg.Additional, add)
+		curOffset += bytesRead
+	}
+
 	return nil
 }
 
+// MarshalBinary marshals the Message into binary format which will be sent across the wire.
+// It fulfills the encoding.BinaryMarshaler interface.
 func (msg *Message) MarshalBinary() ([]byte, error) {
+	// Inform this message is too long per RFC 1035 so a Truncation flag will be set
+	// DNS RFCs tells us this will normally result in query being retried via TCP
+	if binary.Size(*msg) > 512 {
+		msg.Header.SetTC(true)
+	}
+
 	headerBytes, err := msg.Header.MarshalBinary()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)
@@ -81,6 +122,22 @@ func (msg *Message) MarshalBinary() ([]byte, error) {
 			return nil, fmt.Errorf("failed to marshal answer: %w", err)
 		}
 		result = append(result, aBytes...)
+	}
+
+	for _, auth := range msg.Authority {
+		authBytes, err := auth.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal authority: %w", err)
+		}
+		result = append(result, authBytes...)
+	}
+
+	for _, add := range msg.Additional {
+		addBytes, err := add.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal additional: %w", err)
+		}
+		result = append(result, addBytes...)
 	}
 
 	return result, nil
