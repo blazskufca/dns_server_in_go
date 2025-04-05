@@ -3,7 +3,7 @@ package header
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/utils"
+	"github.com/blazskufca/dns_server_in_go/internal/utils"
 	"math"
 )
 

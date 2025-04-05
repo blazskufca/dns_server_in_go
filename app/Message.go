@@ -4,10 +4,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/RR"
+	"github.com/blazskufca/dns_server_in_go/internal/RR"
 
-	"github.com/codecrafters-io/dns-server-starter-go/internal/header"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/question"
+	"github.com/blazskufca/dns_server_in_go/internal/header"
+	"github.com/blazskufca/dns_server_in_go/internal/question"
 )
 
 // Message represents a DNS message.

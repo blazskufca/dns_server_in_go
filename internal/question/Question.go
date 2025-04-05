@@ -3,9 +3,9 @@ package question
 import (
 	"encoding/binary"
 	"errors"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/DNS_Class"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/DNS_Type"
-	"github.com/codecrafters-io/dns-server-starter-go/internal/utils"
+	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
+	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
+	"github.com/blazskufca/dns_server_in_go/internal/utils"
 )
 
 /*
