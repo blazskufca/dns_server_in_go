@@ -35,7 +35,7 @@ type DNSServer struct {
 }
 
 // New creates a new DNSServer with initialized UDP, TCP listener and a forwarder.
-func New(address string, resolverAddr string, logger *slog.Logger) (*DNSServer, func(), error) {
+func New(address string, resolverAddr string, recursive bool, logger *slog.Logger) (*DNSServer, func(), error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to resolve UDP address: %w", err)
@@ -66,8 +66,8 @@ func New(address string, resolverAddr string, logger *slog.Logger) (*DNSServer, 
 
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			AddSource:   true,
-			Level:       slog.LevelDebug,
+			AddSource:   false,
+			Level:       slog.LevelInfo,
 			ReplaceAttr: nil,
 		}))
 	}
@@ -79,7 +79,7 @@ func New(address string, resolverAddr string, logger *slog.Logger) (*DNSServer, 
 		resolverHost: resolverAddr,
 		logger:       logger,
 		cache:        newDNSCache(logger),
-		recursive:    true,
+		recursive:    recursive,
 	}
 
 	cleanup := func() {
@@ -94,11 +94,12 @@ func New(address string, resolverAddr string, logger *slog.Logger) (*DNSServer, 
 // Start starts the TCP and the UDP servers and starts listening on them for incoming DNS queries.
 func (s *DNSServer) Start() {
 	s.logger.Info("Starting DNS server with resolver", slog.Any("resolver", *s.resolverAddr), slog.Any("listener", s.udpConn.LocalAddr()))
-
-	err := s.bootstrapRootServers()
-	if err != nil {
-		s.logger.Error("Failed to bootstrap root servers, recursive resolution may not work properly",
-			slog.Any("error", err))
+	if s.recursive {
+		err := s.bootstrapRootServers()
+		if err != nil {
+			s.logger.Error("Failed to bootstrap root servers, recursive resolution may not work properly",
+				slog.Any("error", err))
+		}
 	}
 
 	s.logger.Info("TCP listener started", slog.Any("listener", s.tcpListener.Addr()))
@@ -366,8 +367,8 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 
 	result, err := s.resolveWithNameservers(domain, questionType, nameservers, 0, make(map[string]bool))
 	if err != nil {
-		s.logger.Info("Recursive resolution failed, falling back to upstream resolver",
-			slog.String("domain", domain))
+		s.logger.Error("Recursive resolution failed, falling back to upstream resolver",
+			slog.String("domain", domain), slog.Any("error", err))
 
 		query.Header.SetQRFlag(false)
 		queryData, err := query.MarshalBinary()
@@ -474,6 +475,20 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 		return nsResp, nil
 	}
 
+	hasSOA := false
+	for _, auth := range nsResp.Authority {
+		if auth.Type == DNS_Type.SOA {
+			hasSOA = true
+			break
+		}
+	}
+
+	if hasSOA {
+		s.logger.Info("Found authoritative negative response (SOA record)",
+			slog.String("domain", domain))
+		return nsResp, nil
+	}
+
 	nextNameservers, hasAuthority := s.extractAuthorityNameservers(domain, nsResp) // Recursive case: try new authority nameservers
 	if hasAuthority {
 		return s.resolveWithNameservers(domain, questionType, nextNameservers, delegationCount+1, cnameChain)
@@ -482,7 +497,7 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 	if len(remainingServers) > 0 { // If no authority records found, try next nameserver at current level
 		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
 	}
-
+	fmt.Println(nsResp)
 	return nil, fmt.Errorf("all nameservers exhausted without finding an answer")
 }
 
@@ -605,7 +620,6 @@ func (s *DNSServer) extractAuthorityNameservers(domain string, nsResp *Message) 
 						if err != nil {
 							continue
 						}
-
 						nameservers = append(nameservers, RootServer{
 							Name: auth,
 							IP:   ip,
@@ -670,9 +684,9 @@ func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, e
 
 	var ips []net.IP
 	if resp.Header.GetANCOUNT() != 0 {
-		if int(resp.Header.GetNSCOUNT()) != len(resp.Answers) {
-			return nil, fmt.Errorf("failed to resolve nameserver with unexpected ANCOUNT - Expected %d, got %d",
-				len(resp.Answers), resp.Header.GetANCOUNT())
+		if int(resp.Header.GetANCOUNT()) != len(resp.Answers) {
+			return nil, fmt.Errorf("failed to query nameserver with unexpected ANCOUNT (%d) answers, expected %d",
+				resp.Header.GetANCOUNT(), len(resp.Answers))
 		}
 		for _, answer := range resp.Answers {
 			if answer.Type == DNS_Type.A {
