@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
+	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
 	"github.com/blazskufca/dns_server_in_go/internal/RR"
 
 	"github.com/blazskufca/dns_server_in_go/internal/header"
@@ -138,4 +140,31 @@ func (msg *Message) MarshalBinary() ([]byte, error) {
 	}
 
 	return result, nil
+}
+
+// AddQuestion adds a question to the Message.Questions slice and increments the Message.Header.QDCOUNT
+func (msg *Message) AddQuestion(q question.Question) error {
+	msg.Questions = append(msg.Questions, q)
+	return msg.Header.SetQDCOUNT(int(msg.Header.GetQDCOUNT()) + 1)
+}
+
+// createDNSQuery creates a new DNS query message
+func createDNSQuery(name string, qtype DNS_Type.Type, qclass DNS_Class.Class, desireRecursion bool) (Message, error) {
+	msg := Message{}
+	err := msg.Header.SetRandomID()
+	if err != nil {
+		return Message{}, err
+	}
+	msg.Header.SetQRFlag(false)
+	msg.Header.SetRD(desireRecursion)
+
+	quest := question.Question{}
+	quest.SetName(name)
+	quest.SetType(qtype)
+	quest.SetClass(qclass)
+	err = msg.AddQuestion(quest)
+	if err != nil {
+		return Message{}, err
+	}
+	return msg, nil
 }

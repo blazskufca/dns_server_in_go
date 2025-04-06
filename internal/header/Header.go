@@ -1,6 +1,7 @@
 package header
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/utils"
@@ -123,6 +124,24 @@ func (code ResponseCode) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+// SetRandomID sets a random Header.ID which used by the DNS programs to track transactions.
+// Per the RFC 1035 this MUST be unique and unpredictable so it's generated via calls to crypto/rand.
+func (h *Header) SetRandomID() error {
+	n, err := rand.Read(h.ID[:])
+	if err != nil {
+		return err
+	}
+	if n != len(h.ID) {
+		return fmt.Errorf("random id in header does not match the expected length, expected %d, got %d", len(h.ID), n)
+	}
+	return nil
+}
+
+// GetMessageID gets the Header.ID which uniquely identifies this DNS Message.
+func (h *Header) GetMessageID() uint16 {
+	return binary.BigEndian.Uint16(h.ID[:])
 }
 
 // IsQuery returns true if the header represents a query
