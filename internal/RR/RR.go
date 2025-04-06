@@ -127,7 +127,7 @@ func (rr *RR) SetRDATAToMXRecord(preference uint16, exchange string) error {
 }
 
 // GetRDATAAsMXRecord tries to interpret RR.RDATA byte slice as an MX resource record.
-func (rr *RR) GetRDATAAsMXRecord(fullPacket []byte) (preference uint16, exchange string, err error) {
+func (rr *RR) GetRDATAAsMXRecord() (preference uint16, exchange string, err error) {
 	const minimumMXLength int = 3
 	const uint16ByteSize int = 2
 	var offset int
@@ -146,7 +146,7 @@ func (rr *RR) GetRDATAAsMXRecord(fullPacket []byte) (preference uint16, exchange
 	preference = binary.BigEndian.Uint16(rr.RDATA[offset : offset+uint16ByteSize])
 	offset += uint16ByteSize
 
-	exchange, _, err = utils.UnmarshalName(rr.RDATA[offset:], 0, fullPacket)
+	exchange, _, err = utils.UnmarshalName(rr.RDATA[offset:], 0, rr.fullPacket)
 
 	if err != nil {
 		return 0, "", fmt.Errorf("failed to unmarshal MX exchange: %w", err)
@@ -167,7 +167,7 @@ func (rr *RR) SetRDATAToCNAMERecord(canonicalName string) error {
 }
 
 // GetRDATAAsCNAMERecord tries to interpret RR.RDATA byte slice as an CNAME resource record.
-func (rr *RR) GetRDATAAsCNAMERecord(fullPacket []byte) (string, error) {
+func (rr *RR) GetRDATAAsCNAMERecord() (string, error) {
 	if rr.Type != DNS_Type.CNAME {
 		return "", fmt.Errorf("record type is %d, not CNAME type", rr.Type)
 	}
@@ -176,7 +176,7 @@ func (rr *RR) GetRDATAAsCNAMERecord(fullPacket []byte) (string, error) {
 			rr.RDLENGTH)
 	}
 
-	cname, _, err := utils.UnmarshalName(rr.RDATA, 0, fullPacket)
+	cname, _, err := utils.UnmarshalName(rr.RDATA, 0, rr.fullPacket)
 
 	if err != nil {
 		return "", fmt.Errorf("failed to unmarshal CNAME: %w", err)
@@ -197,7 +197,7 @@ func (rr *RR) SetRDATAToNSRecord(nameServer string) error {
 }
 
 // GetRDATAAsNSRecord tries to interpret RR.RDATA byte slice as an NS resource record.
-func (rr *RR) GetRDATAAsNSRecord(fullPacket []byte) (string, error) {
+func (rr *RR) GetRDATAAsNSRecord() (string, error) {
 	if rr.Type != DNS_Type.NS {
 		return "", fmt.Errorf("record type is %d, not NS type", rr.Type)
 	}
@@ -206,7 +206,7 @@ func (rr *RR) GetRDATAAsNSRecord(fullPacket []byte) (string, error) {
 			rr.RDLENGTH)
 	}
 
-	ns, _, err := utils.UnmarshalName(rr.RDATA, 0, fullPacket)
+	ns, _, err := utils.UnmarshalName(rr.RDATA, 0, rr.fullPacket)
 
 	if err != nil {
 		return "", fmt.Errorf("failed to unmarshal NS: %w", err)
@@ -283,7 +283,7 @@ func (rr *RR) SetRDATAToPTRRecord(ptrDomain string) error {
 }
 
 // GetRDATAAsPTRRecord tries to interpret RR.RDATA byte slice as PTR resource record.
-func (rr *RR) GetRDATAAsPTRRecord(fullPacket []byte) (string, error) {
+func (rr *RR) GetRDATAAsPTRRecord() (string, error) {
 	if rr.Type != DNS_Type.PTR {
 		return "", fmt.Errorf("record type is %d, not PTR type", rr.Type)
 	}
@@ -292,7 +292,7 @@ func (rr *RR) GetRDATAAsPTRRecord(fullPacket []byte) (string, error) {
 			rr.RDLENGTH)
 	}
 
-	ptr, _, err := utils.UnmarshalName(rr.RDATA, 0, fullPacket)
+	ptr, _, err := utils.UnmarshalName(rr.RDATA, 0, rr.fullPacket)
 
 	if err != nil {
 		return "", fmt.Errorf("failed to unmarshal PTR: %w", err)
@@ -303,12 +303,12 @@ func (rr *RR) GetRDATAAsPTRRecord(fullPacket []byte) (string, error) {
 
 // SetRDATAToSOARecord sets the RR.RDATA for an SOA record
 func (rr *RR) SetRDATAToSOARecord(
-	mname string, // Primary name server
-	rname string, // Responsible authority's mailbox
-	serial uint32, // Version number of the zone file
+	mname string,   // Primary name server
+	rname string,   // Responsible authority's mailbox
+	serial uint32,  // Version number of the zone file
 	refresh uint32, // Time interval before zone should be refreshed
-	retry uint32, // Time interval before failed refresh should be retried
-	expire uint32, // Time when zone is no longer authoritative
+	retry uint32,   // Time interval before failed refresh should be retried
+	expire uint32,  // Time when zone is no longer authoritative
 	minimum uint32) error {
 
 	rr.Type = DNS_Type.SOA
@@ -344,7 +344,7 @@ func (rr *RR) SetRDATAToSOARecord(
 }
 
 // GetRDATAAsSOARecord tries to interpret RR.RDATA as a SOA resource record.
-func (rr *RR) GetRDATAAsSOARecord(fullPacket []byte) (mname string, rname string, serial uint32, refresh uint32, retry uint32, expire uint32, minimum uint32, err error) {
+func (rr *RR) GetRDATAAsSOARecord() (mname string, rname string, serial uint32, refresh uint32, retry uint32, expire uint32, minimum uint32, err error) {
 	const uint32ByteLength int = 4
 	const fiveUint32s int = uint32ByteLength * 5
 
@@ -357,7 +357,7 @@ func (rr *RR) GetRDATAAsSOARecord(fullPacket []byte) (mname string, rname string
 				rr.RDLENGTH)
 	}
 
-	mname, bytesRead, err := utils.UnmarshalName(rr.RDATA, 0, fullPacket)
+	mname, bytesRead, err := utils.UnmarshalName(rr.RDATA, 0, rr.fullPacket)
 
 	if err != nil {
 		return "", "", 0, 0, 0, 0, 0, fmt.Errorf("failed to unmarshal SOA MNAME: %w", err)
@@ -367,7 +367,7 @@ func (rr *RR) GetRDATAAsSOARecord(fullPacket []byte) (mname string, rname string
 		return "", "", 0, 0, 0, 0, 0, fmt.Errorf("unexpected end of SOA record data")
 	}
 
-	rname, bytesRead2, err := utils.UnmarshalName(rr.RDATA[bytesRead:], 0, fullPacket)
+	rname, bytesRead2, err := utils.UnmarshalName(rr.RDATA[bytesRead:], 0, rr.fullPacket)
 
 	if err != nil {
 		return "", "", 0, 0, 0, 0, 0, fmt.Errorf("failed to unmarshal SOA RNAME: %w", err)
