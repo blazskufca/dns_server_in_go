@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
@@ -92,41 +93,6 @@ func New(address string, resolverAddr string, logger *slog.Logger) (*DNSServer, 
 	}
 
 	return server, cleanup, nil
-}
-
-// resolveNameserver resolves a nameserver hostname to IP addresses using the upstream resolver
-func (s *DNSServer) resolveNameserver(name string) ([]net.IP, error) {
-	query, err := createDNSQuery(name, DNS_Type.A, DNS_Class.IN, true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create nameserver query: %w", err)
-	}
-
-	queryData, err := query.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal nameserver query: %w", err)
-	}
-
-	response, err := s.forwardToResolver(queryData)
-	if err != nil {
-		return nil, err
-	}
-
-	var ips []net.IP
-	for _, answer := range response.Answers {
-		if answer.Type == DNS_Type.A {
-			ip, err := answer.GetRDATAAsARecord()
-			if err != nil {
-				continue
-			}
-			ips = append(ips, ip)
-		}
-	}
-
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("no IP addresses found for nameserver %s", name)
-	}
-
-	return ips, nil
 }
 
 // Start starts the TCP and the UDP servers and starts listening on them for incoming DNS queries.
@@ -237,78 +203,30 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 	}
 
 	s.logger.Debug("Received TCP DNS query",
-		slog.Any("num_questions_in_query", len(msg.Questions)))
+		slog.String("question", msg.Questions[0].Name),
+		slog.Any("type", msg.Questions[0].Type))
 
 	if len(msg.Questions) == 0 {
 		return nil, fmt.Errorf("DNS request contains no questions")
 	}
 
 	if len(msg.Questions) > 1 {
-		mergedResponse := Message{
-			Header:    msg.Header,
-			Questions: msg.Questions,
-			Answers:   make([]RR.RR, 0),
-		}
+		s.logger.Warn("Multiple questions in TCP request, only processing the first one",
+			slog.Int("question_count", len(msg.Questions)))
 
-		mergedResponse.Header.SetQRFlag(true)
-		mergedResponse.Header.SetRCODE(header.NoError)
-
-		successfulQueries := 0
-		for _, q := range msg.Questions {
-			singleMsg := Message{
-				Header:    msg.Header,
-				Questions: []question.Question{q},
-			}
-			err = singleMsg.Header.SetQDCOUNT(1)
-			if err != nil {
-				return nil, fmt.Errorf("failed to set QDCOUNT: %w", err)
-			}
-			err = singleMsg.Header.SetANCOUNT(0)
-			if err != nil {
-				return nil, fmt.Errorf("failed to set ANCOUNT: %w", err)
-			}
-			err = singleMsg.Header.SetNSCOUNT(0)
-			if err != nil {
-				return nil, fmt.Errorf("failed to set NSCOUNT: %w", err)
-			}
-			err = singleMsg.Header.SetARCOUNT(0)
-			if err != nil {
-				return nil, fmt.Errorf("failed to set ARCOUNT: %w", err)
-			}
-
-			queryData, err := singleMsg.MarshalBinary()
-			if err != nil {
-				s.logger.Error("failed to marshal DNS query", slog.Any("error", err))
-				continue
-			}
-
-			responseData, err := s.forwardToResolverTCP(queryData)
-			if err != nil {
-				s.logger.Error("error forwarding question via TCP", slog.Any("question_name", q.Name),
-					slog.Any("error", err))
-				continue
-			}
-
-			if responseData.Header.GetRCODE() != header.NoError {
-				s.logger.Warn("Resolver returned error",
-					slog.Any("question", q.Name),
-					slog.Any("error_code", responseData.Header.GetRCODE()))
-			}
-
-			mergedResponse.Answers = append(mergedResponse.Answers, responseData.Answers...)
-			successfulQueries++
-		}
-
-		if successfulQueries == 0 {
-			return nil, fmt.Errorf("all queries failed")
-		}
-
-		err = mergedResponse.Header.SetANCOUNT(len(mergedResponse.Answers))
+		msg.Questions = msg.Questions[:1]
+		err = msg.Header.SetQDCOUNT(1)
 		if err != nil {
-			return nil, fmt.Errorf("failed to set ANCOUNT: %w", err)
+			s.logger.Error("Failed to update question count", slog.Any("error", err))
 		}
+	}
 
-		return mergedResponse.MarshalBinary()
+	if msg.Header.IsRD() && s.recursive {
+		response, err := s.resolveRecursively(&msg)
+		if err != nil {
+			return nil, fmt.Errorf("recursive resolution failed: %w", err)
+		}
+		return response.MarshalBinary()
 	} else {
 		msg.Header.SetQRFlag(false)
 		queryData, err := msg.MarshalBinary()
@@ -320,11 +238,17 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error forwarding question via TCP: %w", err)
 		}
-		msgDataBytes, err := msgData.MarshalBinary()
-		if err != nil {
-			return nil, fmt.Errorf("error marshalling message: %w", err)
+		if msgData == nil {
+			return nil, fmt.Errorf("error forwarding question via TCP: message is nil")
 		}
-		return msgDataBytes, nil
+		if msgData.Header.GetRCODE() != header.NoError {
+			return nil, fmt.Errorf("error forwarding question via TCP: message has unexpected RCODE %v", msgData.Header.GetRCODE())
+		}
+		if msgData.Header.GetMessageID() != msg.Header.GetMessageID() {
+			return nil, fmt.Errorf("error forwading question via TCP: mismatched message ID - Sent %v but got %v",
+				msg.Header.GetMessageID(), msgData.Header.GetMessageID())
+		}
+		return msgData.MarshalBinary()
 	}
 }
 
@@ -340,246 +264,104 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 	}
 
 	s.logger.Debug("Received DNS query from", slog.Any("from", addr.String()),
-		slog.Any("num_questions_in_query", len(msg.Questions)))
+		slog.String("question", msg.Questions[0].Name),
+		slog.Any("type", msg.Questions[0].Type))
 
-	if len(msg.Questions) == 0 {
+	if len(msg.Questions) == 0 || msg.Header.GetQDCOUNT() == 0 {
 		s.logger.Error("DNS request contains no questions")
 		s.sendErrorResponse(data, addr, header.FormatError)
 		return
 	}
 
-	if msg.Header.IsRD() && s.recursive {
-		if len(msg.Questions) == 1 {
-			// Handle single-question recursive query
-			resp, err := s.resolveRecursively(&msg)
-			if err != nil {
-				s.logger.Error("Recursive resolution failed",
-					slog.String("question", msg.Questions[0].Name),
-					slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
+	if len(msg.Questions) > 1 || msg.Header.GetQDCOUNT() > 1 {
+		s.logger.Warn("Multiple questions in request, only processing the first one",
+			slog.Int("question_count", len(msg.Questions)))
 
-			// Ensure response has the same ID as the query
-			resp.Header.ID = msg.Header.ID
-
-			// Send response
-			respData, err := resp.MarshalBinary()
-			if err != nil {
-				s.logger.Error("Failed to marshal recursive response", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			_, err = s.udpConn.WriteToUDP(respData, addr)
-			if err != nil {
-				s.logger.Error("Failed to send recursive response",
-					slog.Any("to_address", addr.String()),
-					slog.Any("error", err))
-			}
-
-			s.logger.Info("Sent recursive response",
-				slog.Any("to_address", addr.String()),
-				slog.Int("answer_count", len(resp.Answers)))
-			return
-		} else {
-			// Handle multi-question query - process each question separately
-			mergedResponse := Message{
-				Header:    msg.Header,
-				Questions: msg.Questions,
-				Answers:   make([]RR.RR, 0),
-			}
-
-			mergedResponse.Header.SetQRFlag(true)
-			mergedResponse.Header.SetRA(true)
-			mergedResponse.Header.SetRCODE(header.NoError)
-
-			successfulQueries := 0
-			for _, q := range msg.Questions {
-				singleMsg := Message{
-					Header:    msg.Header,
-					Questions: []question.Question{q},
-				}
-				err = singleMsg.Header.SetQDCOUNT(1)
-				if err != nil {
-					s.logger.Error("failed to set QDCOUNT", slog.Any("error", err))
-					continue
-				}
-
-				resp, err := s.resolveRecursively(&singleMsg)
-				if err != nil {
-					s.logger.Error("failed to recursively resolve question",
-						slog.String("question", q.Name),
-						slog.Any("error", err))
-					continue
-				}
-
-				mergedResponse.Answers = append(mergedResponse.Answers, resp.Answers...)
-				successfulQueries++
-			}
-
-			if successfulQueries == 0 {
-				s.logger.Error("All recursive queries failed", slog.Int("question_count", len(msg.Questions)))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			err = mergedResponse.Header.SetANCOUNT(len(mergedResponse.Answers))
-			if err != nil {
-				s.logger.Error("failed to set ANCOUNT", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			responseData, err := mergedResponse.MarshalBinary()
-			if err != nil {
-				s.logger.Error("Error marshalling merged recursive response", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			_, err = s.udpConn.WriteToUDP(responseData, addr)
-			if err != nil {
-				s.logger.Error("Error sending merged recursive response",
-					slog.Any("error", err),
-					slog.Any("to_address", addr.String()))
-			}
-
-			s.logger.Info("Sent merged recursive response",
-				slog.Any("to_address", addr.String()),
-				slog.Int("answer_count", len(mergedResponse.Answers)))
-			return
-		}
-	} else {
-		// Non-recursive or forwarding mode - use existing forwarding code
-		if len(msg.Questions) > 1 {
-			mergedResponse := Message{
-				Header:    msg.Header,
-				Questions: msg.Questions,
-				Answers:   make([]RR.RR, 0),
-			}
-
-			mergedResponse.Header.SetQRFlag(true)
-			mergedResponse.Header.SetRCODE(header.NoError)
-
-			successfulQueries := 0
-			for _, q := range msg.Questions {
-				singleMsg := Message{
-					Header:    msg.Header,
-					Questions: []question.Question{q},
-				}
-				err = singleMsg.Header.SetQDCOUNT(1)
-				if err != nil {
-					s.logger.Error("failed to set QDCOUNT", slog.Any("error", err))
-					continue
-				}
-				err = singleMsg.Header.SetANCOUNT(0)
-				if err != nil {
-					s.logger.Error("failed to set single ANCOUNT", slog.Any("error", err))
-					continue
-				}
-				err = singleMsg.Header.SetNSCOUNT(0)
-				if err != nil {
-					s.logger.Error("failed to set NSCOUNT", slog.Any("error", err))
-					continue
-				}
-				err = singleMsg.Header.SetARCOUNT(0)
-				if err != nil {
-					s.logger.Error("failed to set ARCOUNT", slog.Any("error", err))
-					continue
-				}
-
-				queryData, err := singleMsg.MarshalBinary()
-				if err != nil {
-					s.logger.Error("failed to marshal DNS query", slog.Any("error", err))
-					continue
-				}
-
-				responseData, err := s.forwardToResolver(queryData)
-				if err != nil {
-					s.logger.Error("error forwarding question", slog.Any("question_name", q.Name),
-						slog.Any("error", err))
-					continue
-				}
-
-				if responseData.Header.IsTC() {
-					s.logger.Info("Received truncated response from resolver. Preserving TC flag for client to retry via TCP.",
-						slog.Any("question", q.Name))
-				}
-
-				if responseData.Header.GetRCODE() != header.NoError {
-					s.logger.Warn("Resolver returned error",
-						slog.Any("question", q.Name),
-						slog.Any("error_code", responseData.Header.GetRCODE()))
-				}
-
-				mergedResponse.Answers = append(mergedResponse.Answers, responseData.Answers...)
-				successfulQueries++
-			}
-
-			if successfulQueries == 0 {
-				s.logger.Error("All queries failed", slog.Int("question_count", len(msg.Questions)))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			err = mergedResponse.Header.SetANCOUNT(len(mergedResponse.Answers))
-			if err != nil {
-				s.logger.Error("failed to set ANCOUNT", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			responseData, err := mergedResponse.MarshalBinary()
-			if err != nil {
-				s.logger.Error("Error marshalling merged response", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			_, err = s.udpConn.WriteToUDP(responseData, addr)
-			if err != nil {
-				s.logger.Error("Error sending merged response", slog.Any("error", err), slog.Any("to_address", addr.String()))
-			}
-		} else {
-			msg.Header.SetQRFlag(false)
-			queryData, err := msg.MarshalBinary()
-			if err != nil {
-				s.logger.Error("Error marshalling query", slog.Any("error", err), slog.Any("to_address", addr.String()))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			responseData, err := s.forwardToResolver(queryData)
-			if err != nil {
-				s.logger.Error("Error forwarding request", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			if responseData.Header.IsTC() {
-				s.logger.Info("Received truncated response from resolver. Preserving TC flag for client to retry via TCP.",
-					slog.Any("question", responseData.Questions[0].Name))
-			}
-
-			marshalledData, err := responseData.MarshalBinary()
-			if err != nil {
-				s.logger.Error("Error marshalling response", slog.Any("error", err))
-				s.sendErrorResponse(data, addr, header.ServerFailure)
-				return
-			}
-
-			_, err = s.udpConn.WriteToUDP(marshalledData, addr)
-			if err != nil {
-				s.logger.Error("Error sending response", slog.Any("to_address", addr.String()), slog.Any("error", err))
-			}
+		msg.Questions = msg.Questions[:1]
+		err = msg.Header.SetQDCOUNT(1)
+		if err != nil {
+			s.logger.Error("Failed to update question count", slog.Any("error", err))
 		}
 	}
 
-	s.logger.Info("Processed request", slog.Any("from", addr.String()))
+	if msg.Header.IsRD() && s.recursive {
+		resp, err := s.resolveRecursively(&msg)
+		if err != nil {
+			s.logger.Error("Recursive resolution failed",
+				slog.String("question", msg.Questions[0].Name),
+				slog.Any("error", err))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+		if resp == nil {
+			s.logger.Error("got nil message after recursive resolution")
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+		if resp.Header.GetRCODE() != header.NoError {
+			s.logger.Error("got unexpected RCODE after recursive resolution", slog.Any("error", resp.Header.GetRCODE()))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+
+		resp.Header.ID = msg.Header.ID
+
+		respData, err := resp.MarshalBinary()
+		if err != nil {
+			s.logger.Error("Failed to marshal recursive response", slog.Any("error", err))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+
+		_, err = s.udpConn.WriteToUDP(respData, addr)
+		if err != nil {
+			s.logger.Error("Failed to send recursive response",
+				slog.Any("to_address", addr.String()),
+				slog.Any("error", err))
+		}
+
+		s.logger.Info("Sent recursive response",
+			slog.Any("to_address", addr.String()),
+			slog.Int("answer_count", len(resp.Answers)))
+	} else {
+		msg.Header.SetQRFlag(false)
+		queryData, err := msg.MarshalBinary()
+		if err != nil {
+			s.logger.Error("Error marshalling query", slog.Any("error", err), slog.Any("to_address", addr.String()))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+
+		responseData, err := s.forwardToResolver(queryData)
+		if err != nil {
+			s.logger.Error("Error forwarding request", slog.Any("error", err))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+
+		if responseData.Header.IsTC() {
+			s.logger.Info("Received truncated response from resolver. Preserving TC flag for client to retry via TCP.",
+				slog.Any("question", responseData.Questions[0].Name))
+		}
+
+		marshalledData, err := responseData.MarshalBinary()
+		if err != nil {
+			s.logger.Error("Error marshalling response", slog.Any("error", err))
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
+
+		_, err = s.udpConn.WriteToUDP(marshalledData, addr)
+		if err != nil {
+			s.logger.Error("Error sending response", slog.Any("to_address", addr.String()), slog.Any("error", err))
+		}
+
+		s.logger.Info("Sent forwarded response",
+			slog.Any("to_address", addr.String()),
+			slog.Int("answer_count", len(responseData.Answers)))
+	}
 }
 
-// sendErrorResponse sends a DNS error response with the specified error code
 func (s *DNSServer) sendErrorResponse(data []byte, addr *net.UDPAddr, errorCode header.ResponseCode) {
 	var h header.Header
 
@@ -680,7 +462,7 @@ func (s *DNSServer) forwardToResolver(query []byte) (*Message, error) {
 }
 
 func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
-	conn, err := net.DialTimeout("tcp", s.resolverHost, 5*time.Second)
+	conn, err := net.DialTimeout("tcp4", s.resolverHost, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to resolver via TCP: %w", err)
 	}
@@ -727,54 +509,48 @@ func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
 
 // resolveRecursively performs recursive DNS resolution starting from root servers
 func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
-	if len(query.Questions) != 1 {
-		return nil, fmt.Errorf("recursive resolution only supports single question queries")
+	if query == nil {
+		return nil, errors.New("recursive resolver got nil query")
+	}
+	if len(query.Questions) != 1 || query.Header.GetQDCOUNT() != 1 {
+		return nil, fmt.Errorf("recursive resolution only supports single queryQuestion queries")
 	}
 
-	question := query.Questions[0]
-	questionType := question.Type
-	domain := question.Name
+	queryQuestion := query.Questions[0]
+	questionType := queryQuestion.Type
+	domain := queryQuestion.Name
 
-	// Check cache first
 	cacheKey := fmt.Sprintf("%s:%d", domain, questionType)
-	if cachedResponse := s.cache.get(cacheKey); cachedResponse != nil {
+	if cr := s.cache.get(cacheKey); cr != nil {
 		s.logger.Info("Cache hit", slog.String("domain", domain), slog.Any("type", questionType))
 
-		// Clone the response and update the ID to match the query
-		cachedResponse.Header.ID = query.Header.ID
-		return cachedResponse, nil
+		cr.Header.ID = query.Header.ID
+		return cr, nil
 	}
 
 	s.logger.Info("Starting recursive resolution",
 		slog.String("domain", domain),
 		slog.Any("type", questionType))
 
-	// Create response structure to build
 	response := &Message{
 		Header:    query.Header,
 		Questions: query.Questions,
 		Answers:   []RR.RR{},
 	}
 	response.Header.SetQRFlag(true)
-	response.Header.SetRA(true) // Set recursion available flag
+	response.Header.SetRA(true)
 
-	// Start with root servers
 	var nameservers []RootServer
 	var authority []string
 
-	// Convert RootServer to the common nameserver format we'll use for iteration
 	for _, root := range s.rootServers {
 		nameservers = append(nameservers, root)
 	}
 
-	// Track delegations to prevent loops
 	delegationCount := 0
-	maxDelegations := 10 // Limit depth to prevent infinite loops
-
-	// Track CNAMEs to prevent loops
+	maxDelegations := 10 //TODO: Move this up to struct?
 	cnameChain := make(map[string]bool)
 
-	// Iteratively query nameservers
 	for len(nameservers) > 0 && delegationCount < maxDelegations {
 		server := nameservers[0]
 		nameservers = nameservers[1:]
@@ -785,21 +561,18 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 			slog.String("domain", domain),
 			slog.Any("type", questionType))
 
-		// Create new question for this level
 		nsQuery, err := createDNSQuery(domain, questionType, DNS_Class.IN, false)
 		if err != nil {
 			s.logger.Error("Failed to create nameserver query", slog.Any("error", err))
 			continue
 		}
 
-		// Set ID to be different from original query
 		err = nsQuery.Header.SetRandomID()
 		if err != nil {
 			s.logger.Error("Failed to set random query ID", slog.Any("error", err))
 			continue
 		}
 
-		// Send query to nameserver
 		nsResp, err := s.queryNameserver(server.IP, &nsQuery)
 		if err != nil {
 			s.logger.Debug("Failed to query nameserver",
@@ -808,8 +581,25 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 			continue
 		}
 
+		if nsResp.Header.GetRCODE() != header.NoError {
+			s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
+			continue
+		}
+
+		if nsResp.Header.GetMessageID() != nsQuery.Header.GetMessageID() {
+			s.logger.Error("Failed to query nameserver with unexpected message ID", slog.Any("sent_id",
+				nsQuery.Header.GetMessageID()), slog.Any("got_id", nsResp.Header.GetMessageID()))
+			continue
+		}
+
 		// Check for CNAMEs - if found for non-CNAME queries, follow them
-		if questionType != DNS_Type.CNAME && len(nsResp.Answers) > 0 {
+		if questionType != DNS_Type.CNAME && nsResp.Header.GetANCOUNT() > 0 {
+			if len(nsResp.Answers) != int(nsResp.Header.GetANCOUNT()) {
+				s.logger.Error("Mismatch between ANCOUNT flag and actual answers",
+					slog.Any("ANCOUNT_flag", nsResp.Header.GetANCOUNT()), slog.Any("actual answers",
+						len(nsResp.Answers)))
+				continue
+			}
 			for _, answer := range nsResp.Answers {
 				if answer.Type == DNS_Type.CNAME && answer.GetName() == domain {
 					cname, err := answer.GetRDATAAsCNAMERecord()
@@ -818,10 +608,8 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 						continue
 					}
 
-					// Add CNAME to response
 					response.Answers = append(response.Answers, answer)
 
-					// Check for CNAME loops
 					if cnameChain[cname] {
 						s.logger.Warn("Detected CNAME loop",
 							slog.String("domain", domain),
@@ -829,14 +617,12 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 						break
 					}
 
-					// Follow the CNAME if we haven't already
 					cnameChain[cname] = true
 
 					s.logger.Debug("Following CNAME",
 						slog.String("from", domain),
 						slog.String("to", cname))
 
-					// Recursively resolve the CNAME target
 					cnameQuery, err := createDNSQuery(cname, questionType, DNS_Class.IN, false)
 					if err != nil {
 						s.logger.Error("Failed to create CNAME query", slog.Any("error", err))
@@ -851,16 +637,24 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 						break
 					}
 
-					// Append answers from CNAME resolution
+					if cnameResp.Header.GetRCODE() != header.NoError {
+						s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", cnameResp.Header.GetRCODE()))
+						break
+					}
+
+					if cnameQuery.Header.GetMessageID() != cnameResp.Header.GetMessageID() {
+						s.logger.Error("Failed to query nameserver with unexpected message ID", slog.Any("sent_id",
+							cnameResp.Header.GetMessageID()), slog.Any("got_id", cnameResp.Header.GetMessageID()))
+						break
+					}
+
 					response.Answers = append(response.Answers, cnameResp.Answers...)
 
-					// Found and followed CNAME, no need to continue resolution
 					err = response.Header.SetANCOUNT(len(response.Answers))
 					if err != nil {
 						s.logger.Error("Failed to set ANCOUNT", slog.Any("error", err))
 					}
 
-					// Cache the response
 					s.cache.put(cacheKey, response)
 
 					return response, nil
@@ -868,9 +662,7 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 			}
 		}
 
-		// Check for authoritative answer
 		if nsResp.Header.IsAA() && len(nsResp.Answers) > 0 {
-			// Found authoritative answer, return it
 			response.Answers = nsResp.Answers
 			response.Authority = nsResp.Authority
 			response.Additional = nsResp.Additional
@@ -892,13 +684,11 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 				slog.String("domain", domain),
 				slog.Int("answer_count", len(response.Answers)))
 
-			// Cache the response
 			s.cache.put(cacheKey, response)
 
 			return response, nil
 		}
 
-		// Extract nameservers from Authority section for delegation
 		newAuthority := []string{}
 		for _, auth := range nsResp.Authority {
 			if auth.Type == DNS_Type.NS {
@@ -911,7 +701,6 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 			}
 		}
 
-		// If we have new authority records, prepare for delegation
 		if len(newAuthority) > 0 {
 			delegationCount++
 			authority = newAuthority

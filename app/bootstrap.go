@@ -6,6 +6,7 @@ import (
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
 	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"log/slog"
+	"net"
 )
 
 // bootstrapRootServers queries the upstream resolver for root server information
@@ -123,4 +124,57 @@ func (s *DNSServer) bootstrapRootServers() error {
 	s.rootServers = rootServers
 	s.logger.Info("Root servers bootstrapped successfully", slog.Int("count", len(rootServers)))
 	return nil
+}
+
+// resolveNameserver resolves a nameserver hostname to IP addresses using the upstream resolver
+func (s *DNSServer) resolveNameserver(name string) ([]net.IP, error) {
+	query, err := createDNSQuery(name, DNS_Type.A, DNS_Class.IN, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create nameserver query: %w", err)
+	}
+
+	queryData, err := query.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal nameserver query: %w", err)
+	}
+
+	response, err := s.forwardToResolver(queryData)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Header.GetRCODE() != header.NoError {
+		return nil, fmt.Errorf("unexpected response code from upstream: %v", response.Header.GetRCODE())
+	}
+	if !response.Header.IsResponse() {
+		return nil, fmt.Errorf("expected QR flag to best to response but it was not - %v", response.Header.IsResponse())
+	}
+	if response.Header.GetMessageID() != query.Header.GetMessageID() {
+		return nil, fmt.Errorf("expected message id %v but got %v", query.Header.GetMessageID(), response.Header.GetMessageID())
+	}
+
+	var ips []net.IP
+	if response.Header.GetANCOUNT() != 0 {
+
+		if int(response.Header.GetANCOUNT()) != len(response.Answers) {
+			return nil, fmt.Errorf("expected %v ANCOUNT response but got %v ANCOUNT responses",
+				len(response.Answers), response.Header.GetANCOUNT())
+		}
+
+		for _, answer := range response.Answers {
+			if answer.Type == DNS_Type.A {
+				ip, err := answer.GetRDATAAsARecord()
+				if err != nil {
+					continue
+				}
+				ips = append(ips, ip)
+			}
+		}
+	}
+
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no IP addresses found for nameserver %s", name)
+	}
+
+	return ips, nil
 }
