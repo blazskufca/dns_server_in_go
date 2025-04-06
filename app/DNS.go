@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
@@ -9,10 +8,7 @@ import (
 	"github.com/blazskufca/dns_server_in_go/internal/RR"
 	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"github.com/blazskufca/dns_server_in_go/internal/question"
-	"github.com/blazskufca/dns_server_in_go/internal/utils"
-	"io"
 	"log/slog"
-	"math"
 	"net"
 	"os"
 	"strings"
@@ -121,134 +117,6 @@ func (s *DNSServer) Start() {
 		s.wg.Add(1)
 
 		go s.handleDNSRequest(buf[:n], addr)
-	}
-}
-
-// startTCPServer starts a TCP server on which a client usually calls if DNS Message is truncated.
-func (s *DNSServer) startTCPServer() {
-	s.wg.Add(1)
-	defer s.wg.Done()
-	for {
-		conn, err := s.tcpListener.Accept()
-		if err != nil {
-			s.logger.Error("failed to accept TCP connection", slog.Any("error", err))
-			continue
-		}
-
-		s.wg.Add(1)
-		go s.handleTCPConnection(conn)
-	}
-}
-
-// handleTCPConnection handles incoming DNS queries on a TCP server.
-// DNS Message's over TCP are prefixed with 2 byte (uint16) message length.
-func (s *DNSServer) handleTCPConnection(conn net.Conn) {
-	defer conn.Close()
-	defer s.wg.Done()
-
-	const lenPrefix = 2
-
-	err := conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err != nil {
-		s.logger.Error("failed to set connection deadline", slog.Any("error", err))
-		return
-	}
-
-	lenBuf := make([]byte, lenPrefix)
-	_, err = io.ReadFull(conn, lenBuf)
-	if err != nil {
-		s.logger.Error("failed to read message length", slog.Any("error", err))
-		return
-	}
-
-	msgLen := binary.BigEndian.Uint16(lenBuf)
-	if msgLen == 0 {
-		s.logger.Error("received empty message or message length is missing", slog.Any("message_len", msgLen))
-		return
-	}
-
-	msgBuf := make([]byte, msgLen)
-	_, err = io.ReadFull(conn, msgBuf)
-	if err != nil {
-		s.logger.Error("failed to read message", slog.Any("error", err))
-		return
-	}
-
-	response, err := s.processDNSRequestTCP(msgBuf)
-	if err != nil {
-		s.logger.Error("failed to process TCP DNS request", slog.Any("error", err))
-		return
-	}
-
-	if utils.WouldOverflowUint16(len(response)) {
-		s.logger.Error("response too large", slog.Any("response_size", len(response)),
-			slog.Any("uint16_max", math.MaxUint16))
-		return
-	}
-	lenBytes := make([]byte, lenPrefix)
-	binary.BigEndian.PutUint16(lenBytes, uint16(len(response)))
-
-	_, err = conn.Write(append(lenBytes, response...))
-	if err != nil {
-		s.logger.Error("failed to write TCP response", slog.Any("error", err))
-		return
-	}
-}
-
-func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
-	msg := Message{}
-	err := msg.UnmarshalBinary(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal DNS request: %w", err)
-	}
-
-	s.logger.Debug("Received TCP DNS query",
-		slog.String("question", msg.Questions[0].Name),
-		slog.Any("type", msg.Questions[0].Type))
-
-	if len(msg.Questions) == 0 {
-		return nil, fmt.Errorf("DNS request contains no questions")
-	}
-
-	if len(msg.Questions) > 1 {
-		s.logger.Warn("Multiple questions in TCP request, only processing the first one",
-			slog.Int("question_count", len(msg.Questions)))
-
-		msg.Questions = msg.Questions[:1]
-		err = msg.Header.SetQDCOUNT(1)
-		if err != nil {
-			s.logger.Error("Failed to update question count", slog.Any("error", err))
-		}
-	}
-
-	if msg.Header.IsRD() && s.recursive {
-		response, err := s.resolveRecursively(&msg)
-		if err != nil {
-			return nil, fmt.Errorf("recursive resolution failed: %w", err)
-		}
-		return response.MarshalBinary()
-	} else {
-		msg.Header.SetQRFlag(false)
-		queryData, err := msg.MarshalBinary()
-		if err != nil {
-			return nil, fmt.Errorf("error marshalling query: %w", err)
-		}
-
-		msgData, err := s.forwardToResolverTCP(queryData)
-		if err != nil {
-			return nil, fmt.Errorf("error forwarding question via TCP: %w", err)
-		}
-		if msgData == nil {
-			return nil, fmt.Errorf("error forwarding question via TCP: message is nil")
-		}
-		if msgData.Header.GetRCODE() != header.NoError {
-			return nil, fmt.Errorf("error forwarding question via TCP: message has unexpected RCODE %v", msgData.Header.GetRCODE())
-		}
-		if msgData.Header.GetMessageID() != msg.Header.GetMessageID() {
-			return nil, fmt.Errorf("error forwading question via TCP: mismatched message ID - Sent %v but got %v",
-				msg.Header.GetMessageID(), msgData.Header.GetMessageID())
-		}
-		return msgData.MarshalBinary()
 	}
 }
 
@@ -461,52 +329,6 @@ func (s *DNSServer) forwardToResolver(query []byte) (*Message, error) {
 	return msg, nil
 }
 
-func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
-	conn, err := net.DialTimeout("tcp4", s.resolverHost, 5*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to resolver via TCP: %w", err)
-	}
-	defer conn.Close()
-
-	err = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err != nil {
-		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
-	}
-
-	lenBuf := make([]byte, 2)
-	queryLen := len(query)
-
-	if utils.WouldOverflowUint32(queryLen) {
-		return nil, fmt.Errorf("query length overflow")
-	}
-
-	binary.BigEndian.PutUint16(lenBuf, uint16(queryLen))
-
-	_, err = conn.Write(append(lenBuf, query...))
-	if err != nil {
-		return nil, fmt.Errorf("failed to send query to resolver via TCP: %w", err)
-	}
-
-	lenBuf = make([]byte, 2)
-	_, err = io.ReadFull(conn, lenBuf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response length from resolver: %w", err)
-	}
-	responseLen := binary.BigEndian.Uint16(lenBuf)
-	response := make([]byte, responseLen)
-	_, err = io.ReadFull(conn, response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response from resolver: %w", err)
-	}
-	responseMsg := Message{}
-	err = responseMsg.UnmarshalBinary(response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response from resolver: %w", err)
-	}
-
-	return &responseMsg, nil
-}
-
 // resolveRecursively performs recursive DNS resolution starting from root servers
 func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 	if query == nil {
@@ -516,16 +338,14 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 		return nil, fmt.Errorf("recursive resolution only supports single queryQuestion queries")
 	}
 
-	queryQuestion := query.Questions[0]
-	questionType := queryQuestion.Type
-	domain := queryQuestion.Name
-
+	questionType := query.Questions[0].Type
+	domain := query.Questions[0].Name
 	cacheKey := fmt.Sprintf("%s:%d", domain, questionType)
-	if cr := s.cache.get(cacheKey); cr != nil {
-		s.logger.Info("Cache hit", slog.String("domain", domain), slog.Any("type", questionType))
 
-		cr.Header.ID = query.Header.ID
-		return cr, nil
+	if che := s.cache.get(cacheKey); che != nil {
+		s.logger.Info("Cache hit", slog.String("domain", domain), slog.Any("type", questionType))
+		che.Header.ID = query.Header.ID
+		return che, nil
 	}
 
 	s.logger.Info("Starting recursive resolution",
@@ -535,161 +355,222 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 	response := &Message{
 		Header:    query.Header,
 		Questions: query.Questions,
-		Answers:   []RR.RR{},
 	}
 	response.Header.SetQRFlag(true)
 	response.Header.SetRA(true)
 
 	var nameservers []RootServer
-	var authority []string
-
 	for _, root := range s.rootServers {
 		nameservers = append(nameservers, root)
 	}
 
-	delegationCount := 0
-	maxDelegations := 10 //TODO: Move this up to struct?
-	cnameChain := make(map[string]bool)
+	result, err := s.resolveWithNameservers(domain, questionType, nameservers, 0, make(map[string]bool))
+	if err != nil {
+		s.logger.Info("Recursive resolution failed, falling back to upstream resolver",
+			slog.String("domain", domain))
 
-	for len(nameservers) > 0 && delegationCount < maxDelegations {
-		server := nameservers[0]
-		nameservers = nameservers[1:]
+		query.Header.SetQRFlag(false)
+		queryData, err := query.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal fallback query: %w", err)
+		}
 
-		s.logger.Debug("Querying nameserver",
+		return s.forwardToResolver(queryData)
+	}
+
+	response.Answers = result.Answers
+	response.Authority = result.Authority
+	response.Additional = result.Additional
+	response.Header.SetAA(result.Header.IsAA())
+
+	if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
+		s.logger.Error("Failed to set ANCOUNT", slog.Any("error", err))
+	}
+	if err := response.Header.SetNSCOUNT(len(response.Authority)); err != nil {
+		s.logger.Error("Failed to set NSCOUNT", slog.Any("error", err))
+	}
+	if err := response.Header.SetARCOUNT(len(response.Additional)); err != nil {
+		s.logger.Error("Failed to set ARCOUNT", slog.Any("error", err))
+	}
+
+	s.cache.put(cacheKey, response)
+	return response, nil
+}
+
+// resolveWithNameservers recursively resolves a domain by querying nameservers
+func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.Type, nameservers []RootServer,
+	delegationCount int, cnameChain map[string]bool) (*Message, error) {
+
+	const maxDelegations = 10
+
+	if delegationCount >= maxDelegations { // Base case: delegation limit reached
+		return nil, fmt.Errorf("exceeded maximum delegation count (%d)", maxDelegations)
+	}
+
+	if len(nameservers) == 0 { // Base case: no nameservers left to try
+		return nil, fmt.Errorf("no nameservers available to query")
+	}
+
+	server := nameservers[0]
+	remainingServers := nameservers[1:]
+
+	s.logger.Debug("Querying nameserver",
+		slog.String("nameserver", server.Name),
+		slog.String("ip", server.IP.String()),
+		slog.String("domain", domain),
+		slog.Any("type", questionType))
+
+	nsQuery, err := createDNSQuery(domain, questionType, DNS_Class.IN, false)
+	if err != nil {
+		s.logger.Error("Failed to create nameserver query", slog.Any("error", err))
+		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	}
+
+	err = nsQuery.Header.SetRandomID()
+	if err != nil {
+		s.logger.Error("Failed to set random query ID", slog.Any("error", err))
+		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	}
+
+	nsResp, err := s.queryNameserver(server.IP, &nsQuery)
+	if err != nil {
+		s.logger.Debug("Failed to query nameserver",
 			slog.String("nameserver", server.Name),
-			slog.String("ip", server.IP.String()),
+			slog.Any("error", err))
+		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	}
+
+	if nsResp.Header.GetRCODE() != header.NoError {
+		s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
+		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	}
+
+	if nsResp.Header.GetMessageID() != nsQuery.Header.GetMessageID() {
+		s.logger.Error("Failed to query nameserver with unexpected message ID",
+			slog.Any("sent_id", nsQuery.Header.GetMessageID()),
+			slog.Any("got_id", nsResp.Header.GetMessageID()))
+		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	}
+
+	// Check for CNAME records when not specifically looking for CNAMEs
+	if questionType != DNS_Type.CNAME && nsResp.Header.GetANCOUNT() > 0 {
+		if len(nsResp.Answers) != int(nsResp.Header.GetANCOUNT()) {
+			s.logger.Error("Mismatch between ANCOUNT flag and actual answers",
+				slog.Any("ANCOUNT_flag", nsResp.Header.GetANCOUNT()),
+				slog.Any("actual answers", len(nsResp.Answers)))
+			return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+		}
+
+		cnameResult := s.handleCNAMEs(domain, questionType, nsResp, cnameChain)
+		if cnameResult != nil {
+			return cnameResult, nil
+		}
+	}
+
+	if nsResp.Header.IsAA() && len(nsResp.Answers) > 0 {
+		s.logger.Info("Found authoritative answer",
 			slog.String("domain", domain),
-			slog.Any("type", questionType))
+			slog.Int("answer_count", len(nsResp.Answers)))
+		return nsResp, nil
+	}
 
-		nsQuery, err := createDNSQuery(domain, questionType, DNS_Class.IN, false)
-		if err != nil {
-			s.logger.Error("Failed to create nameserver query", slog.Any("error", err))
-			continue
-		}
+	nextNameservers, hasAuthority := s.extractAuthorityNameservers(domain, nsResp) // Recursive case: try new authority nameservers
+	if hasAuthority {
+		return s.resolveWithNameservers(domain, questionType, nextNameservers, delegationCount+1, cnameChain)
+	}
 
-		err = nsQuery.Header.SetRandomID()
-		if err != nil {
-			s.logger.Error("Failed to set random query ID", slog.Any("error", err))
-			continue
-		}
+	if len(remainingServers) > 0 { // If no authority records found, try next nameserver at current level
+		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	}
 
-		nsResp, err := s.queryNameserver(server.IP, &nsQuery)
-		if err != nil {
-			s.logger.Debug("Failed to query nameserver",
-				slog.String("nameserver", server.Name),
-				slog.Any("error", err))
-			continue
-		}
+	return nil, fmt.Errorf("all nameservers exhausted without finding an answer")
+}
 
-		if nsResp.Header.GetRCODE() != header.NoError {
-			s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
-			continue
-		}
+// handleCNAMEs processes any CNAME records in the response
+func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsResp *Message, cnameChain map[string]bool) *Message {
+	if nsResp == nil {
+		return nil
+	}
 
-		if nsResp.Header.GetMessageID() != nsQuery.Header.GetMessageID() {
-			s.logger.Error("Failed to query nameserver with unexpected message ID", slog.Any("sent_id",
-				nsQuery.Header.GetMessageID()), slog.Any("got_id", nsResp.Header.GetMessageID()))
-			continue
-		}
-
-		// Check for CNAMEs - if found for non-CNAME queries, follow them
-		if questionType != DNS_Type.CNAME && nsResp.Header.GetANCOUNT() > 0 {
-			if len(nsResp.Answers) != int(nsResp.Header.GetANCOUNT()) {
-				s.logger.Error("Mismatch between ANCOUNT flag and actual answers",
-					slog.Any("ANCOUNT_flag", nsResp.Header.GetANCOUNT()), slog.Any("actual answers",
-						len(nsResp.Answers)))
+	for _, answer := range nsResp.Answers {
+		if answer.Type == DNS_Type.CNAME && answer.GetName() == domain {
+			cname, err := answer.GetRDATAAsCNAMERecord()
+			if err != nil {
+				s.logger.Warn("Failed to parse CNAME", slog.Any("error", err))
 				continue
 			}
-			for _, answer := range nsResp.Answers {
-				if answer.Type == DNS_Type.CNAME && answer.GetName() == domain {
-					cname, err := answer.GetRDATAAsCNAMERecord()
-					if err != nil {
-						s.logger.Warn("Failed to parse CNAME", slog.Any("error", err))
-						continue
-					}
 
-					response.Answers = append(response.Answers, answer)
-
-					if cnameChain[cname] {
-						s.logger.Warn("Detected CNAME loop",
-							slog.String("domain", domain),
-							slog.String("cname", cname))
-						break
-					}
-
-					cnameChain[cname] = true
-
-					s.logger.Debug("Following CNAME",
-						slog.String("from", domain),
-						slog.String("to", cname))
-
-					cnameQuery, err := createDNSQuery(cname, questionType, DNS_Class.IN, false)
-					if err != nil {
-						s.logger.Error("Failed to create CNAME query", slog.Any("error", err))
-						break
-					}
-
-					cnameResp, err := s.resolveRecursively(&cnameQuery)
-					if err != nil {
-						s.logger.Error("Failed to resolve CNAME target",
-							slog.String("cname", cname),
-							slog.Any("error", err))
-						break
-					}
-
-					if cnameResp.Header.GetRCODE() != header.NoError {
-						s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", cnameResp.Header.GetRCODE()))
-						break
-					}
-
-					if cnameQuery.Header.GetMessageID() != cnameResp.Header.GetMessageID() {
-						s.logger.Error("Failed to query nameserver with unexpected message ID", slog.Any("sent_id",
-							cnameResp.Header.GetMessageID()), slog.Any("got_id", cnameResp.Header.GetMessageID()))
-						break
-					}
-
-					response.Answers = append(response.Answers, cnameResp.Answers...)
-
-					err = response.Header.SetANCOUNT(len(response.Answers))
-					if err != nil {
-						s.logger.Error("Failed to set ANCOUNT", slog.Any("error", err))
-					}
-
-					s.cache.put(cacheKey, response)
-
-					return response, nil
-				}
+			if cnameChain[cname] {
+				s.logger.Warn("Detected CNAME loop",
+					slog.String("domain", domain),
+					slog.String("cname", cname))
+				return nil
 			}
-		}
 
-		if nsResp.Header.IsAA() && len(nsResp.Answers) > 0 {
-			response.Answers = nsResp.Answers
-			response.Authority = nsResp.Authority
-			response.Additional = nsResp.Additional
+			cnameChain[cname] = true // mark this cname as resloved
 
-			err = response.Header.SetANCOUNT(len(response.Answers))
+			s.logger.Debug("Following CNAME",
+				slog.String("from", domain),
+				slog.String("to", cname))
+
+			cnameQuery, err := createDNSQuery(cname, questionType, DNS_Class.IN, false)
 			if err != nil {
+				s.logger.Error("Failed to create CNAME query", slog.Any("error", err))
+				return nil
+			}
+
+			cnameResp, err := s.resolveRecursively(&cnameQuery)
+			if err != nil {
+				s.logger.Error("Failed to resolve CNAME target",
+					slog.String("cname", cname),
+					slog.Any("error", err))
+				return nil
+			}
+
+			if cnameResp.Header.GetRCODE() != header.NoError {
+				s.logger.Error("Failed to query nameserver with unexpected RCODE",
+					slog.Any("rcode", cnameResp.Header.GetRCODE()))
+				return nil
+			}
+
+			if cnameQuery.Header.GetMessageID() != cnameResp.Header.GetMessageID() {
+				s.logger.Error("Failed to query nameserver with unexpected message ID",
+					slog.Any("sent_id", cnameResp.Header.GetMessageID()),
+					slog.Any("got_id", cnameResp.Header.GetMessageID()))
+				return nil
+			}
+
+			response := &Message{
+				Header:    cnameResp.Header,
+				Questions: cnameResp.Questions,
+				Answers:   []RR.RR{answer},
+			}
+			response.Answers = append(response.Answers, cnameResp.Answers...)
+			response.Authority = cnameResp.Authority
+			response.Additional = cnameResp.Additional
+
+			if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
 				s.logger.Error("Failed to set ANCOUNT", slog.Any("error", err))
 			}
-			err = response.Header.SetNSCOUNT(len(response.Authority))
-			if err != nil {
-				s.logger.Error("Failed to set NSCOUNT", slog.Any("error", err))
-			}
-			err = response.Header.SetARCOUNT(len(response.Additional))
-			if err != nil {
-				s.logger.Error("Failed to set ARCOUNT", slog.Any("error", err))
-			}
 
-			s.logger.Info("Found authoritative answer",
-				slog.String("domain", domain),
-				slog.Int("answer_count", len(response.Answers)))
-
-			s.cache.put(cacheKey, response)
-
-			return response, nil
+			return response
 		}
+	}
+	return nil
+}
 
-		newAuthority := []string{}
+// extractAuthorityNameservers extracts NS records from the Authority section and resolves their IP addresses
+func (s *DNSServer) extractAuthorityNameservers(domain string, nsResp *Message) ([]RootServer, bool) {
+	if nsResp == nil {
+		return nil, false
+	}
+
+	var authority []string
+	if nsResp.Header.GetNSCOUNT() != 0 {
+		if int(nsResp.Header.GetNSCOUNT()) != len(nsResp.Authority) {
+			s.logger.Error("Failed to extract authority nameservers", slog.String("domain", domain))
+			return nil, false
+		}
 		for _, auth := range nsResp.Authority {
 			if auth.Type == DNS_Type.NS {
 				nsName, err := auth.GetRDATAAsNSRecord()
@@ -697,116 +578,110 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 					s.logger.Warn("Failed to parse NS record", slog.Any("error", err))
 					continue
 				}
-				newAuthority = append(newAuthority, nsName)
+				authority = append(authority, nsName)
 			}
 		}
+	}
 
-		if len(newAuthority) > 0 {
-			delegationCount++
-			authority = newAuthority
+	if len(authority) == 0 {
+		return nil, false
+	}
 
-			// Clear nameservers list for new delegation
-			nameservers = []RootServer{}
+	var nameservers []RootServer
 
-			// First try to get IPs from Additional section (glue records)
-			foundGlue := false
-			for _, add := range nsResp.Additional {
-				if add.Type == DNS_Type.A {
-					for _, auth := range authority {
-						if add.GetName() == auth {
-							ip, err := add.GetRDATAAsARecord()
-							if err != nil {
-								continue
-							}
+	foundGlue := false
+	if nsResp.Header.GetARCOUNT() != 0 {
 
-							nameservers = append(nameservers, RootServer{
-								Name: auth,
-								IP:   ip,
-							})
-							foundGlue = true
-						}
-					}
-				}
-			}
+		if len(nsResp.Additional) != int(nsResp.Header.GetARCOUNT()) {
+			s.logger.Error("Failed to extract glue records", slog.String("domain", domain))
+			return nil, false
+		}
 
-			// If no glue records, resolve nameservers manually
-			if !foundGlue {
+		for _, add := range nsResp.Additional { // Glue records
+			if add.Type == DNS_Type.A {
 				for _, auth := range authority {
-					// Avoid resolving the domain we're already trying to resolve (loop prevention)
-					if strings.HasSuffix(domain, auth) {
-						s.logger.Warn("Skipping nameserver resolution to avoid loop",
-							slog.String("domain", domain),
-							slog.String("nameserver", auth))
-						continue
-					}
+					if add.GetName() == auth {
+						ip, err := add.GetRDATAAsARecord()
+						if err != nil {
+							continue
+						}
 
-					ips, err := s.resolveNameserverRecursively(auth)
-					if err != nil {
-						s.logger.Debug("Failed to resolve nameserver",
-							slog.String("nameserver", auth),
-							slog.Any("error", err))
-						continue
-					}
-
-					for _, ip := range ips {
 						nameservers = append(nameservers, RootServer{
 							Name: auth,
 							IP:   ip,
 						})
+						foundGlue = true
 					}
-				}
-			}
-
-			// If we didn't find any nameserver IPs, try next server in current level
-			if len(nameservers) == 0 {
-				s.logger.Warn("Failed to find nameserver IPs for delegation",
-					slog.Any("authority", authority))
-
-				// If we've tried all current nameservers, give up
-				if len(nameservers) == 0 {
-					break
 				}
 			}
 		}
 	}
 
-	// If we reached here without finding an answer, fall back to the upstream resolver
-	s.logger.Info("Recursive resolution failed, falling back to upstream resolver",
-		slog.String("domain", domain))
+	if !foundGlue {
+		for _, auth := range authority {
+			// Avoid resolving the domain we're already trying to resolve (loop prevention)
+			if strings.HasSuffix(domain, auth) {
+				s.logger.Warn("Skipping nameserver resolution to avoid loop",
+					slog.String("domain", domain),
+					slog.String("nameserver", auth))
+				continue
+			}
 
-	// Reset query flags
-	query.Header.SetQRFlag(false)
-	queryData, err := query.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal fallback query: %w", err)
+			ips, err := s.resolveNameserverRecursively(auth)
+			if err != nil {
+				s.logger.Debug("Failed to resolve nameserver",
+					slog.String("nameserver", auth),
+					slog.Any("error", err))
+				continue
+			}
+
+			for _, ip := range ips {
+				nameservers = append(nameservers, RootServer{
+					Name: auth,
+					IP:   ip,
+				})
+			}
+		}
 	}
 
-	return s.forwardToResolver(queryData)
+	return nameservers, len(nameservers) > 0
 }
 
 // resolveNameserverRecursively resolves a nameserver using recursive resolution
 func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, error) {
-	// Create query for nameserver A record
 	query, err := createDNSQuery(nameserver, DNS_Type.A, DNS_Class.IN, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create nameserver query: %w", err)
 	}
 
-	// Try to resolve recursively
 	resp, err := s.resolveRecursively(&query)
 	if err != nil {
-		// Fall back to upstream resolver if recursive resolution fails
+		s.logger.Warn("Failed to resolve nameserver recursively", slog.Any("error", err))
 		return s.resolveNameserver(nameserver)
 	}
 
+	if resp.Header.GetRCODE() != header.NoError {
+		return nil, fmt.Errorf("failed to query nameserver with unexpected RCODE %v", resp.Header.GetRCODE())
+	}
+	if resp.Header.GetMessageID() != query.Header.GetMessageID() {
+		return nil, fmt.Errorf("failed to query nameserver with unexpected message ID: sent %v but got %v",
+			query.Header.GetMessageID(), resp.Header.GetMessageID())
+	}
+
 	var ips []net.IP
-	for _, answer := range resp.Answers {
-		if answer.Type == DNS_Type.A {
-			ip, err := answer.GetRDATAAsARecord()
-			if err != nil {
-				continue
+	if resp.Header.GetANCOUNT() != 0 {
+		if int(resp.Header.GetNSCOUNT()) != len(resp.Answers) {
+			return nil, fmt.Errorf("failed to resolve nameserver with unexpected ANCOUNT - Expected %d, got %d",
+				len(resp.Answers), resp.Header.GetANCOUNT())
+		}
+		for _, answer := range resp.Answers {
+			if answer.Type == DNS_Type.A {
+				ip, err := answer.GetRDATAAsARecord()
+				if err != nil {
+					continue
+				}
+				ips = append(ips, ip)
 			}
-			ips = append(ips, ip)
 		}
 	}
 
@@ -819,16 +694,17 @@ func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, e
 
 // queryNameserver sends a query to a specific nameserver and returns the response
 func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, error) {
-	// Marshal the query to binary
+	if query == nil {
+		return nil, errors.New("query name server got nil query")
+	}
 	queryData, err := query.MarshalBinary()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal query: %w", err)
 	}
 
-	// Create a UDP connection to the nameserver
 	serverAddr := net.UDPAddr{
 		IP:   serverIP,
-		Port: 53, // Standard DNS port
+		Port: 53,
 	}
 
 	conn, err := net.DialUDP("udp", nil, &serverAddr)
@@ -837,100 +713,38 @@ func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, 
 	}
 	defer conn.Close()
 
-	// Set a timeout
 	err = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
 	}
 
-	// Send the query
 	_, err = conn.Write(queryData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send query to nameserver %s: %w", serverIP.String(), err)
 	}
 
-	// Read the response
 	responseData := make([]byte, 512)
 	n, err := conn.Read(responseData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response from nameserver %s: %w", serverIP.String(), err)
 	}
 
-	// Parse the response
 	response := &Message{}
 	err = response.UnmarshalBinary(responseData[:n])
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response from nameserver %s: %w", serverIP.String(), err)
 	}
 
-	// Check for truncation flag, retry with TCP if needed
+	if response.Header.GetRCODE() != header.NoError {
+		return nil, fmt.Errorf("failed to query nameserver with unexpected RCODE %v", response.Header.GetRCODE())
+	}
+	if response.Header.GetMessageID() != query.Header.GetMessageID() {
+		return nil, fmt.Errorf("failed to query nameserver with unexpected message ID: sent %v but got %v",
+			query.Header.GetMessageID(), response.Header.GetMessageID())
+	}
+
 	if response.Header.IsTC() {
 		return s.queryNameserverTCP(serverIP, query)
-	}
-
-	return response, nil
-}
-
-// queryNameserverTCP sends a query to a specific nameserver using TCP and returns the response
-func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message) (*Message, error) {
-	// Marshal the query to binary
-	queryData, err := query.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal TCP query: %w", err)
-	}
-
-	// Create a TCP connection to the nameserver
-	serverAddr := net.TCPAddr{
-		IP:   serverIP,
-		Port: 53, // Standard DNS port
-	}
-
-	conn, err := net.DialTCP("tcp", nil, &serverAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to nameserver %s via TCP: %w", serverIP.String(), err)
-	}
-	defer conn.Close()
-
-	// Set a timeout
-	err = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err != nil {
-		return nil, fmt.Errorf("failed to set TCP connection deadline: %w", err)
-	}
-
-	// Prepend message length for TCP
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(queryData)))
-
-	// Send the length-prefixed query
-	_, err = conn.Write(append(lenBuf, queryData...))
-	if err != nil {
-		return nil, fmt.Errorf("failed to send TCP query to nameserver %s: %w", serverIP.String(), err)
-	}
-
-	// Read the response length
-	respLenBuf := make([]byte, 2)
-	_, err = io.ReadFull(conn, respLenBuf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read TCP response length from nameserver %s: %w", serverIP.String(), err)
-	}
-
-	respLen := binary.BigEndian.Uint16(respLenBuf)
-	if respLen == 0 {
-		return nil, fmt.Errorf("received empty TCP response from nameserver %s", serverIP.String())
-	}
-
-	// Read the response
-	responseData := make([]byte, respLen)
-	_, err = io.ReadFull(conn, responseData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read TCP response from nameserver %s: %w", serverIP.String(), err)
-	}
-
-	// Parse the response
-	response := &Message{}
-	err = response.UnmarshalBinary(responseData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal TCP response from nameserver %s: %w", serverIP.String(), err)
 	}
 
 	return response, nil
