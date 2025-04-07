@@ -58,20 +58,22 @@ func (q *Question) SetClass(class DNS_Class.Class) {
 
 // MarshalBinary the Question into a byte slice.
 func (q *Question) MarshalBinary() ([]byte, error) {
+	const byteSizeUintSixteen int = 2
+	const twoUintSixteens int = byteSizeUintSixteen * 2
 
-	nameBytes, err := utils.EncodeDomainNameToLabel(q.Name)
+	buf := make([]byte, 0)
+
+	nameBytes, err := utils.MarshalName(q.Name, buf, 0)
 	if err != nil {
 		return nil, err
 	}
+	buf = append(buf, nameBytes...)
 
-	buf := make([]byte, len(nameBytes)+4)
-
-	copy(buf, nameBytes)
-
+	buf = append(buf, make([]byte, twoUintSixteens)...)
 	nbl := len(nameBytes)
 
-	binary.BigEndian.PutUint16(buf[nbl:nbl+2], uint16(q.Type))
-	binary.BigEndian.PutUint16(buf[nbl+2:nbl+4], uint16(q.Class))
+	binary.BigEndian.PutUint16(buf[nbl:nbl+byteSizeUintSixteen], uint16(q.Type))
+	binary.BigEndian.PutUint16(buf[nbl+byteSizeUintSixteen:nbl+twoUintSixteens], uint16(q.Class))
 
 	return buf, nil
 }

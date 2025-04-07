@@ -100,7 +100,7 @@ func (rr *RR) GetRDATAAsARecord() (net.IP, error) {
 	return net.IPv4(rr.RDATA[0], rr.RDATA[1], rr.RDATA[2], rr.RDATA[3]), nil
 }
 
-// SetRDATAToMXRecord sets the RR.RDATA for an MX record with preference and exchange server
+// SetRDATAToMXRecord sets the RR.RDATA to contain a mail exchange domain
 func (rr *RR) SetRDATAToMXRecord(preference uint16, exchange string) error {
 	const firstByteIndex int = 0
 	const secondByteIndex int = 1
@@ -115,8 +115,7 @@ func (rr *RR) SetRDATAToMXRecord(preference uint16, exchange string) error {
 	data[firstByteIndex] = byte(preference >> oneByteShift)
 	data[secondByteIndex] = byte(preference & maskedByte)
 
-	// Append encoded domain name
-	encodedExchange, err := utils.EncodeDomainNameToLabel(exchange)
+	encodedExchange, err := utils.MarshalName(exchange, data, len(data))
 	if err != nil {
 		return err
 	}
@@ -158,7 +157,7 @@ func (rr *RR) GetRDATAAsMXRecord() (preference uint16, exchange string, err erro
 // SetRDATAToCNAMERecord sets the RR.RDATA to contain a canonical name
 func (rr *RR) SetRDATAToCNAMERecord(canonicalName string) error {
 	rr.Type = DNS_Type.CNAME
-	encodedName, err := utils.EncodeDomainNameToLabel(canonicalName)
+	encodedName, err := utils.MarshalName(canonicalName, nil, 0)
 	if err != nil {
 		return err
 	}
@@ -188,7 +187,7 @@ func (rr *RR) GetRDATAAsCNAMERecord() (string, error) {
 // SetRDATAToNSRecord sets the RR.RDATA to contain a name server domain
 func (rr *RR) SetRDATAToNSRecord(nameServer string) error {
 	rr.Type = DNS_Type.NS
-	encodedNS, err := utils.EncodeDomainNameToLabel(nameServer)
+	encodedNS, err := utils.MarshalName(nameServer, nil, 0)
 	if err != nil {
 		return err
 	}
@@ -274,7 +273,7 @@ func (rr *RR) GetRDATAAsTXTRecord() (string, error) {
 // SetRDATAToPTRRecord sets the RR.RDATA to contain a pointer domain name
 func (rr *RR) SetRDATAToPTRRecord(ptrDomain string) error {
 	rr.Type = DNS_Type.PTR
-	encodedPtr, err := utils.EncodeDomainNameToLabel(ptrDomain)
+	encodedPtr, err := utils.MarshalName(ptrDomain, nil, 0)
 	if err != nil {
 		return err
 	}
@@ -303,43 +302,38 @@ func (rr *RR) GetRDATAAsPTRRecord() (string, error) {
 
 // SetRDATAToSOARecord sets the RR.RDATA for an SOA record
 func (rr *RR) SetRDATAToSOARecord(
-	mname string,   // Primary name server
-	rname string,   // Responsible authority's mailbox
-	serial uint32,  // Version number of the zone file
+	mname string, // Primary name server
+	rname string, // Responsible authority's mailbox
+	serial uint32, // Version number of the zone file
 	refresh uint32, // Time interval before zone should be refreshed
-	retry uint32,   // Time interval before failed refresh should be retried
-	expire uint32,  // Time when zone is no longer authoritative
+	retry uint32, // Time interval before failed refresh should be retried
+	expire uint32, // Time when zone is no longer authoritative
 	minimum uint32) error {
 
 	rr.Type = DNS_Type.SOA
 
-	// Encode the two domain names
-	encodedMName, err := utils.EncodeDomainNameToLabel(mname)
+	buf := make([]byte, 0)
+
+	encodedMName, err := utils.MarshalName(mname, buf, 0)
 	if err != nil {
 		return err
 	}
-	encodedRName, err := utils.EncodeDomainNameToLabel(rname)
+	buf = append(buf, encodedMName...)
+
+	encodedRName, err := utils.MarshalName(rname, buf, len(buf))
 	if err != nil {
 		return err
 	}
-	// Calculate total size
-	totalSize := len(encodedMName) + len(encodedRName) + 20 // 20 bytes for the 5 uint32 values
-
-	// Create data buffer
-	data := make([]byte, 0, totalSize)
-
-	// Append the domain names
-	data = append(data, encodedMName...)
-	data = append(data, encodedRName...)
+	buf = append(buf, encodedRName...)
 
 	// Append the 5 uint32 values
-	data = utils.AppendUint32(data, serial)
-	data = utils.AppendUint32(data, refresh)
-	data = utils.AppendUint32(data, retry)
-	data = utils.AppendUint32(data, expire)
-	data = utils.AppendUint32(data, minimum)
+	buf = utils.AppendUint32(buf, serial)
+	buf = utils.AppendUint32(buf, refresh)
+	buf = utils.AppendUint32(buf, retry)
+	buf = utils.AppendUint32(buf, expire)
+	buf = utils.AppendUint32(buf, minimum)
 
-	rr.SetRDATA(data)
+	rr.SetRDATA(buf)
 	return nil
 }
 
@@ -409,18 +403,16 @@ func (rr *RR) MarshalBinary() ([]byte, error) {
 	const uint32ByteLength int = 4
 	const TypeClassTTLRDLENGTHSize int = 3*uint16ByteLength + uint32ByteLength
 
-	nameBytes, err := utils.EncodeDomainNameToLabel(rr.Name)
+	buf := make([]byte, 0)
+
+	nameBytes, err := utils.MarshalName(rr.Name, buf, 0)
 	if err != nil {
 		return nil, err
 	}
+	buf = append(buf, nameBytes...)
 
-	// Name + Type(2) + Class(2) + TTL(4) + RDLENGTH(2) + RDATA
-	totalSize := len(nameBytes) + TypeClassTTLRDLENGTHSize + int(rr.RDLENGTH)
-	buf := make([]byte, totalSize)
-
-	offset := 0
-	copy(buf[offset:], nameBytes)
-	offset += len(nameBytes)
+	buf = append(buf, make([]byte, TypeClassTTLRDLENGTHSize)...)
+	offset := len(nameBytes)
 
 	binary.BigEndian.PutUint16(buf[offset:offset+uint16ByteLength], uint16(rr.Type))
 	offset += uint16ByteLength
@@ -434,7 +426,7 @@ func (rr *RR) MarshalBinary() ([]byte, error) {
 	binary.BigEndian.PutUint16(buf[offset:offset+uint16ByteLength], rr.RDLENGTH)
 	offset += uint16ByteLength
 
-	copy(buf[offset:], rr.RDATA)
+	buf = append(buf, rr.RDATA...)
 
 	return buf, nil
 }

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
@@ -44,6 +45,76 @@ func EncodeDomainNameToLabel(name string) ([]byte, error) {
 	buf = append(buf, 0)
 
 	return buf, nil
+}
+
+// MarshalName marshals a domain name with compression, using pointers to previously seen names
+func MarshalName(name string, fullPacket []byte, offset int) ([]byte, error) {
+	if err := ValidateName(name); err != nil {
+		return nil, err
+	}
+
+	if name == "" || name == "." {
+		return []byte{0}, nil
+	}
+
+	labels := strings.Split(strings.TrimSpace(name), ".")
+	var result []byte
+	currentOffset := offset
+
+	for i, label := range labels {
+		trimmedLabel := strings.TrimSpace(label)
+		if len(trimmedLabel) == 0 {
+			continue
+		}
+
+		remainingName := strings.Join(labels[i:], ".")
+		if matchOffset := findNameMatch(remainingName, fullPacket); matchOffset != -1 {
+			pointer := createPointer(matchOffset)
+			result = append(result, pointer...)
+			return result, nil
+		}
+
+		result = append(result, byte(len(trimmedLabel)))
+		result = append(result, []byte(trimmedLabel)...)
+		currentOffset += 1 + len(trimmedLabel)
+	}
+
+	result = append(result, 0)
+	return result, nil
+}
+
+// findNameMatch looks for a match of the given name in the full packet
+func findNameMatch(name string, fullPacket []byte) int {
+	if len(name) == 0 {
+		return -1
+	}
+
+	nameBytes, err := EncodeDomainNameToLabel(name)
+	if err != nil {
+		return -1
+	}
+
+	for i := 0; i < len(fullPacket)-len(nameBytes); i++ {
+		if bytes.Equal(fullPacket[i:i+len(nameBytes)], nameBytes) {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// createPointer creates a DNS pointer (2 bytes) pointing to the given offset
+func createPointer(offset int) []byte {
+	if offset > 0b0011111111111111 { // 14-bit max
+		return nil
+	}
+
+	// First byte: 11000000 (pointer marker) | (offset >> 8)
+	// Second byte: offset & 0xFF
+	pointer := make([]byte, 2)
+	pointer[0] = 0b11000000 | byte(offset>>8)
+	pointer[1] = byte(offset & 0xFF)
+	return pointer
 }
 
 // ValidateName validates that names are valid Labels.
