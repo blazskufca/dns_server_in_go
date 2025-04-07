@@ -518,166 +518,240 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 	return nil, fmt.Errorf("all nameservers exhausted without finding an answer")
 }
 
-// handleCNAMEs processes any CNAME records in the response
+// handleCNAMEs should hande the CNAME chains...Except when it does not everything breaks...
 func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsResp *Message, cnameChain map[string]bool) *Message {
 	if nsResp == nil {
 		return nil
 	}
 
+	response := &Message{
+		Header:    nsResp.Header,
+		Questions: nsResp.Questions,
+	}
+
 	for _, answer := range nsResp.Answers {
-		if answer.Type == DNS_Type.CNAME && answer.GetName() == domain {
-			cname, err := answer.GetRDATAAsCNAMERecord()
-			if err != nil {
-				s.logger.Warn("Failed to parse CNAME", slog.Any("error", err))
-				continue
-			}
-
-			if cnameChain[cname] {
-				s.logger.Warn("Detected CNAME loop",
-					slog.String("domain", domain),
-					slog.String("cname", cname))
-				return nil
-			}
-
-			cnameChain[cname] = true
-
-			s.logger.Debug("Following CNAME",
-				slog.String("from", domain),
-				slog.String("to", cname))
-
-			cnameQuery, err := createDNSQuery(cname, questionType, DNS_Class.IN, false)
-			if err != nil {
-				s.logger.Error("Failed to create CNAME query", slog.Any("error", err))
-				return nil
-			}
-
-			cnameResp, err := s.resolveRecursively(&cnameQuery)
-			if err != nil {
-				s.logger.Error("Failed to resolve CNAME target",
-					slog.String("cname", cname),
-					slog.Any("error", err))
-				return nil
-			}
-
-			if cnameResp.Header.GetRCODE() != header.NoError {
-				s.logger.Error("Failed to query nameserver with unexpected RCODE",
-					slog.Any("rcode", cnameResp.Header.GetRCODE()))
-				return nil
-			}
-
-			if cnameQuery.Header.GetMessageID() != cnameResp.Header.GetMessageID() {
-				s.logger.Error("Failed to query nameserver with unexpected message ID",
-					slog.Any("sent_id", cnameResp.Header.GetMessageID()),
-					slog.Any("got_id", cnameResp.Header.GetMessageID()))
-				return nil
-			}
-
-			response := &Message{
-				Header:    cnameResp.Header,
-				Questions: cnameResp.Questions,
-			}
-
-			cleanCname := RR.RR{}
-			cleanCname.SetName(answer.GetName())
-			cleanCname.SetType(DNS_Type.CNAME)
-			cleanCname.SetClass(answer.Class)
-			err = cleanCname.SetTTL(int(answer.GetTTL()))
-			if err != nil {
-				s.logger.Error("Failed to set TTL", slog.Any("error", err))
-				continue
-			}
-			err = cleanCname.SetRDATAToCNAMERecord(cname)
-			if err != nil {
-				s.logger.Error("Failed to create clean CNAME record", slog.Any("error", err))
-				continue
-			}
-
-			response.Answers = append(response.Answers, cleanCname)
-
-			for _, ans := range cnameResp.Answers {
-				cleanAns := RR.RR{}
-				cleanAns.SetName(ans.GetName())
-				cleanAns.SetType(ans.Type)
-				cleanAns.SetClass(ans.Class)
-				cleanAns.SetTTL(int(ans.GetTTL()))
-
-				if ans.Type == DNS_Type.CNAME {
-					if target, err := ans.GetRDATAAsCNAMERecord(); err == nil {
-						err = cleanAns.SetRDATAToCNAMERecord(target)
-						if err != nil {
-							s.logger.Error("Failed to set RDATA to CNAME record", slog.Any("error", err))
-							continue
-						}
-					} else {
-						cleanAns.SetRDATA(ans.GetRDATA())
-					}
-				} else {
-					cleanAns.SetRDATA(ans.GetRDATA())
-				}
-
-				response.Answers = append(response.Answers, cleanAns)
-			}
-
-			for _, auth := range cnameResp.Authority {
-				cleanAuth := RR.RR{}
-				cleanAuth.SetName(auth.GetName())
-				cleanAuth.SetType(auth.Type)
-				cleanAuth.SetClass(auth.Class)
-				cleanAuth.SetTTL(int(auth.GetTTL()))
-
-				if auth.Type == DNS_Type.NS {
-					if nsName, err := auth.GetRDATAAsNSRecord(); err == nil {
-						cleanAuth.SetRDATAToNSRecord(nsName)
-					} else {
-						cleanAuth.SetRDATA(auth.GetRDATA())
-					}
-				} else {
-					cleanAuth.SetRDATA(auth.GetRDATA())
-				}
-
-				response.Authority = append(response.Authority, cleanAuth)
-			}
-
-			for _, add := range cnameResp.Additional {
-				cleanAdd := RR.RR{}
-				cleanAdd.SetName(add.GetName())
-				cleanAdd.SetType(add.Type)
-				cleanAdd.SetClass(add.Class)
-				cleanAdd.SetTTL(int(add.GetTTL()))
-
-				if add.Type == DNS_Type.MX {
-					if pref, exchange, err := add.GetRDATAAsMXRecord(); err == nil {
-						cleanAdd.SetRDATAToMXRecord(pref, exchange)
-					} else {
-						cleanAdd.SetRDATA(add.GetRDATA())
-					}
-				} else if add.Type == DNS_Type.PTR {
-					if ptr, err := add.GetRDATAAsPTRRecord(); err == nil {
-						cleanAdd.SetRDATAToPTRRecord(ptr)
-					} else {
-						cleanAdd.SetRDATA(add.GetRDATA())
-					}
-				} else {
-					cleanAdd.SetRDATA(add.GetRDATA())
-				}
-
-				response.Additional = append(response.Additional, cleanAdd)
-			}
-
-			if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
-				s.logger.Error("Failed to set ANCOUNT", slog.Any("error", err))
-			}
-
-			if err := response.Header.SetNSCOUNT(len(response.Authority)); err != nil {
-				s.logger.Error("Failed to set NSCOUNT", slog.Any("error", err))
-			}
-
-			if err := response.Header.SetARCOUNT(len(response.Additional)); err != nil {
-				s.logger.Error("Failed to set ARCOUNT", slog.Any("error", err))
-			}
-
-			return response
+		if answer.Type != DNS_Type.CNAME || answer.GetName() != domain {
+			continue
 		}
+
+		cname, err := answer.GetRDATAAsCNAMERecord()
+		if err != nil {
+			s.logger.Warn("Failed to parse CNAME", slog.Any("error", err))
+			continue
+		}
+
+		if cnameChain[cname] {
+			s.logger.Warn("Detected CNAME loop",
+				slog.String("domain", domain),
+				slog.String("cname", cname))
+			return nil
+		}
+		cnameChain[cname] = true
+
+		s.logger.Debug("Following CNAME",
+			slog.String("from", domain),
+			slog.String("to", cname))
+
+		ra := RR.RR{}
+		ra.SetName(domain)
+		ra.SetType(DNS_Type.CNAME)
+		ra.SetClass(DNS_Class.IN)
+		if err := ra.SetTTL(int(answer.GetTTL())); err != nil {
+			s.logger.Warn("Failed to set TTL", slog.Any("error", err))
+			return nil
+		}
+		if err := ra.SetRDATAToCNAMERecord(cname); err != nil {
+			s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
+			return nil
+		}
+		response.Answers = append(response.Answers, ra)
+
+		cnameQuery, err := createDNSQuery(cname, questionType, DNS_Class.IN, false)
+		if err != nil {
+			s.logger.Error("Failed to create CNAME query", slog.Any("error", err))
+			return nil
+		}
+
+		cnameResp, err := s.resolveRecursively(&cnameQuery)
+		if err != nil || cnameResp == nil {
+			s.logger.Error("Failed to resolve CNAME target",
+				slog.String("cname", cname),
+				slog.Any("error", err))
+			return nil
+		}
+
+		if cnameResp.Header.GetRCODE() != header.NoError ||
+			cnameQuery.Header.GetMessageID() != cnameResp.Header.GetMessageID() {
+			s.logger.Error("Invalid CNAME response",
+				slog.Any("rcode", cnameResp.Header.GetRCODE()),
+				slog.Any("sent_id", cnameQuery.Header.GetMessageID()),
+				slog.Any("got_id", cnameResp.Header.GetMessageID()))
+			return nil
+		}
+
+		for _, ans := range cnameResp.Answers {
+			newAns := RR.RR{}
+			newAns.SetName(ans.GetName())
+			newAns.SetType(ans.Type)
+			newAns.SetClass(ans.Class)
+			if err := newAns.SetTTL(int(ans.GetTTL())); err != nil {
+				s.logger.Warn("Failed to set TTL for answer", slog.Any("error", err))
+				continue
+			}
+			switch ans.Type {
+			case DNS_Type.CNAME:
+				if cnameData, err := ans.GetRDATAAsCNAMERecord(); err == nil {
+					err = newAns.SetRDATAToCNAMERecord(cnameData)
+					if err != nil {
+						s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
+						continue
+					}
+				}
+			case DNS_Type.A:
+				if ip, err := ans.GetRDATAAsARecord(); err == nil {
+					newAns.SetRDATAToARecord(ip)
+				} else {
+					s.logger.Warn("Failed to set A RDATA", slog.Any("error", err))
+					continue
+				}
+			case DNS_Type.TXT:
+				if txt, err := ans.GetRDATAAsTXTRecord(); err == nil {
+					newAns.SetRDATAToTXTRecord(txt)
+				} else {
+					s.logger.Warn("Failed to set TXT RDATA", slog.Any("error", err))
+					continue
+				}
+			case DNS_Type.SOA:
+				mname, rname, serial, refresh, retry, expire, minimum, err := ans.GetRDATAAsSOARecord()
+				if err != nil {
+					s.logger.Warn("Failed to get SOA record", slog.Any("error", err))
+					continue
+				}
+				err = newAns.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+				if err != nil {
+					s.logger.Warn("Failed to set SOA record", slog.Any("error", err))
+					continue
+				}
+			default:
+				newAns.SetRDATA(ans.GetRDATA())
+			}
+			response.Answers = append(response.Answers, newAns)
+		}
+
+		for _, auth := range cnameResp.Authority {
+			newAns := RR.RR{}
+			newAns.SetName(auth.GetName())
+			newAns.SetType(auth.Type)
+			newAns.SetClass(auth.Class)
+			if err := newAns.SetTTL(int(auth.GetTTL())); err != nil {
+				s.logger.Warn("Failed to set TTL for answer", slog.Any("error", err))
+				continue
+			}
+			switch auth.Type {
+			case DNS_Type.CNAME:
+				if cnameData, err := auth.GetRDATAAsCNAMERecord(); err == nil {
+					err = newAns.SetRDATAToCNAMERecord(cnameData)
+					if err != nil {
+						s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
+						continue
+					}
+				}
+			case DNS_Type.A:
+				if ip, err := auth.GetRDATAAsARecord(); err == nil {
+					newAns.SetRDATAToARecord(ip)
+				} else {
+					s.logger.Warn("Failed to set A RDATA", slog.Any("error", err))
+					continue
+				}
+			case DNS_Type.TXT:
+				if txt, err := auth.GetRDATAAsTXTRecord(); err == nil {
+					newAns.SetRDATAToTXTRecord(txt)
+				} else {
+					s.logger.Warn("Failed to set TXT RDATA", slog.Any("error", err))
+					continue
+				}
+			case DNS_Type.SOA:
+				mname, rname, serial, refresh, retry, expire, minimum, err := auth.GetRDATAAsSOARecord()
+				if err != nil {
+					s.logger.Warn("Failed to get SOA record", slog.Any("error", err))
+					continue
+				}
+				err = newAns.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+				if err != nil {
+					s.logger.Warn("Failed to set SOA record", slog.Any("error", err))
+					continue
+				}
+			default:
+				newAns.SetRDATA(auth.GetRDATA())
+			}
+			response.Authority = append(response.Authority, newAns)
+		}
+
+		for _, add := range cnameResp.Additional {
+			newAns := RR.RR{}
+			newAns.SetName(add.GetName())
+			newAns.SetType(add.Type)
+			newAns.SetClass(add.Class)
+			if err := newAns.SetTTL(int(add.GetTTL())); err != nil {
+				s.logger.Warn("Failed to set TTL for answer", slog.Any("error", err))
+				continue
+			}
+			switch add.Type {
+			case DNS_Type.CNAME:
+				if cnameData, err := add.GetRDATAAsCNAMERecord(); err == nil {
+					err = newAns.SetRDATAToCNAMERecord(cnameData)
+					if err != nil {
+						s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
+						continue
+					}
+				}
+			case DNS_Type.A:
+				if ip, err := add.GetRDATAAsARecord(); err == nil {
+					newAns.SetRDATAToARecord(ip)
+				} else {
+					s.logger.Warn("Failed to set A RDATA", slog.Any("error", err))
+					continue
+				}
+			case DNS_Type.TXT:
+				if txt, err := add.GetRDATAAsTXTRecord(); err == nil {
+					newAns.SetRDATAToTXTRecord(txt)
+				} else {
+					s.logger.Warn("Failed to set TXT RDATA", slog.Any("error", err))
+					continue
+				}
+			case DNS_Type.SOA:
+				mname, rname, serial, refresh, retry, expire, minimum, err := add.GetRDATAAsSOARecord()
+				if err != nil {
+					s.logger.Warn("Failed to get SOA record", slog.Any("error", err))
+					continue
+				}
+				err = newAns.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+				if err != nil {
+					s.logger.Warn("Failed to set SOA record", slog.Any("error", err))
+					continue
+				}
+			default:
+				newAns.SetRDATA(add.GetRDATA())
+			}
+			response.Additional = append(response.Additional, newAns)
+		}
+	}
+
+	if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
+		s.logger.Warn("Failed to set ANCOUNT", slog.Any("error", err))
+		return nil
+	}
+	if err := response.Header.SetNSCOUNT(len(response.Authority)); err != nil {
+		s.logger.Warn("Failed to set NSCOUNT", slog.Any("error", err))
+		return nil
+	}
+	if err := response.Header.SetARCOUNT(len(response.Additional)); err != nil {
+		s.logger.Warn("Failed to set ARCOUNT", slog.Any("error", err))
+		return nil
+	}
+
+	if len(response.Answers) > 0 {
+		return response
 	}
 	return nil
 }
