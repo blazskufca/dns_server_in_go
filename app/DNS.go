@@ -382,7 +382,7 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 		nameservers = append(nameservers, root)
 	}
 
-	result, err := s.resolveWithNameservers(domain, questionType, nameservers, 0, make(map[string]bool))
+	result, err := s.resolveWithNameservers(domain, questionType, nameservers, 0, make(map[string]struct{}))
 	if err != nil {
 		s.logger.Error("Recursive resolution failed, falling back to upstream resolver",
 			slog.String("domain", domain), slog.Any("error", err))
@@ -417,7 +417,7 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 
 // resolveWithNameservers recursively resolves a domain by querying nameservers
 func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.Type, nameservers []RootServer,
-	delegationCount int, cnameChain map[string]bool) (*Message, error) {
+	delegationCount int, cnameChain map[string]struct{}) (*Message, error) {
 
 	const maxDelegations = 10
 
@@ -518,8 +518,8 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 	return nil, fmt.Errorf("all nameservers exhausted without finding an answer")
 }
 
-// handleCNAMEs should hande the CNAME chains...Except when it does not everything breaks...
-func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsResp *Message, cnameChain map[string]bool) *Message {
+// handleCNAMEs should hande the CNAME chains...Except when it does not everything breaks... (This caused me a lot of issues)
+func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsResp *Message, cnameChain map[string]struct{}) *Message {
 	if nsResp == nil {
 		return nil
 	}
@@ -540,13 +540,13 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 			continue
 		}
 
-		if cnameChain[cname] {
+		if _, ok := cnameChain[cname]; ok {
 			s.logger.Warn("Detected CNAME loop",
 				slog.String("domain", domain),
 				slog.String("cname", cname))
 			return nil
 		}
-		cnameChain[cname] = true
+		cnameChain[cname] = struct{}{}
 
 		s.logger.Debug("Following CNAME",
 			slog.String("from", domain),
