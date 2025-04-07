@@ -115,6 +115,7 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("recursive resolution failed: %w", err)
 		}
+		response.Header.SetTC(false)
 		return response.MarshalBinary()
 	} else {
 		msg.Header.SetQRFlag(false)
@@ -137,6 +138,7 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 			return nil, fmt.Errorf("error forwading question via TCP: mismatched message ID - Sent %v but got %v",
 				msg.Header.GetMessageID(), msgData.Header.GetMessageID())
 		}
+		msgData.Header.SetTC(false)
 		return msgData.MarshalBinary()
 	}
 }

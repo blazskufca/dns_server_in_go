@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
@@ -94,12 +93,6 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 // MarshalBinary marshals the Message into binary format which will be sent across the wire.
 // It fulfills the encoding.BinaryMarshaler interface.
 func (msg *Message) MarshalBinary() ([]byte, error) {
-	// Inform this message is too long per RFC 1035 so a Truncation flag will be set
-	// DNS RFCs tells us this will normally result in query being retried via TCP
-	if binary.Size(*msg) > 512 {
-		msg.Header.SetTC(true)
-	}
-
 	headerBytes, err := msg.Header.MarshalBinary()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal header: %w", err)

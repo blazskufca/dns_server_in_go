@@ -182,6 +182,16 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 			return
 		}
 
+		if len(respData) > 512 {
+			resp.Header.SetTC(true)
+			respData, err = resp.MarshalBinary()
+			if err != nil {
+				s.logger.Error("Failed to marshal recursive response with TC flag", slog.Any("error", err))
+				s.sendErrorResponse(data, addr, header.ServerFailure)
+				return
+			}
+		}
+
 		_, err = s.udpConn.WriteToUDP(respData, addr)
 		if err != nil {
 			s.logger.Error("Failed to send recursive response",
@@ -208,26 +218,33 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 			return
 		}
 
-		if responseData.Header.IsTC() {
-			s.logger.Info("Received truncated response from resolver. Preserving TC flag for client to retry via TCP.",
-				slog.Any("question", responseData.Questions[0].Name))
-		}
+		if len(responseData.Answers) > 0 {
+			marshalledData, err := responseData.MarshalBinary()
+			if err != nil {
+				s.logger.Error("Error marshalling response", slog.Any("error", err))
+				s.sendErrorResponse(data, addr, header.ServerFailure)
+				return
+			}
 
-		marshalledData, err := responseData.MarshalBinary()
-		if err != nil {
-			s.logger.Error("Error marshalling response", slog.Any("error", err))
-			s.sendErrorResponse(data, addr, header.ServerFailure)
-			return
-		}
+			if len(marshalledData) > 512 {
+				responseData.Header.SetTC(true)
+				marshalledData, err = responseData.MarshalBinary()
+				if err != nil {
+					s.logger.Error("Error marshalling response with TC flag", slog.Any("error", err))
+					s.sendErrorResponse(data, addr, header.ServerFailure)
+					return
+				}
+			}
 
-		_, err = s.udpConn.WriteToUDP(marshalledData, addr)
-		if err != nil {
-			s.logger.Error("Error sending response", slog.Any("to_address", addr.String()), slog.Any("error", err))
-		}
+			_, err = s.udpConn.WriteToUDP(marshalledData, addr)
+			if err != nil {
+				s.logger.Error("Error sending response", slog.Any("to_address", addr.String()), slog.Any("error", err))
+			}
 
-		s.logger.Info("Sent forwarded response",
-			slog.Any("to_address", addr.String()),
-			slog.Int("answer_count", len(responseData.Answers)))
+			s.logger.Info("Sent forwarded response",
+				slog.Any("to_address", addr.String()),
+				slog.Int("answer_count", len(responseData.Answers)))
+		}
 	}
 }
 
