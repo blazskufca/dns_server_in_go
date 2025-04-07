@@ -539,7 +539,7 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 				return nil
 			}
 
-			cnameChain[cname] = true // mark this cname as resloved
+			cnameChain[cname] = true
 
 			s.logger.Debug("Following CNAME",
 				slog.String("from", domain),
@@ -575,14 +575,105 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 			response := &Message{
 				Header:    cnameResp.Header,
 				Questions: cnameResp.Questions,
-				Answers:   []RR.RR{answer},
 			}
-			response.Answers = append(response.Answers, cnameResp.Answers...)
-			response.Authority = cnameResp.Authority
-			response.Additional = cnameResp.Additional
+
+			cleanCname := RR.RR{}
+			cleanCname.SetName(answer.GetName())
+			cleanCname.SetType(DNS_Type.CNAME)
+			cleanCname.SetClass(answer.Class)
+			err = cleanCname.SetTTL(int(answer.GetTTL()))
+			if err != nil {
+				s.logger.Error("Failed to set TTL", slog.Any("error", err))
+				continue
+			}
+			err = cleanCname.SetRDATAToCNAMERecord(cname)
+			if err != nil {
+				s.logger.Error("Failed to create clean CNAME record", slog.Any("error", err))
+				continue
+			}
+
+			response.Answers = append(response.Answers, cleanCname)
+
+			for _, ans := range cnameResp.Answers {
+				cleanAns := RR.RR{}
+				cleanAns.SetName(ans.GetName())
+				cleanAns.SetType(ans.Type)
+				cleanAns.SetClass(ans.Class)
+				cleanAns.SetTTL(int(ans.GetTTL()))
+
+				if ans.Type == DNS_Type.CNAME {
+					if target, err := ans.GetRDATAAsCNAMERecord(); err == nil {
+						err = cleanAns.SetRDATAToCNAMERecord(target)
+						if err != nil {
+							s.logger.Error("Failed to set RDATA to CNAME record", slog.Any("error", err))
+							continue
+						}
+					} else {
+						cleanAns.SetRDATA(ans.GetRDATA())
+					}
+				} else {
+					cleanAns.SetRDATA(ans.GetRDATA())
+				}
+
+				response.Answers = append(response.Answers, cleanAns)
+			}
+
+			for _, auth := range cnameResp.Authority {
+				cleanAuth := RR.RR{}
+				cleanAuth.SetName(auth.GetName())
+				cleanAuth.SetType(auth.Type)
+				cleanAuth.SetClass(auth.Class)
+				cleanAuth.SetTTL(int(auth.GetTTL()))
+
+				if auth.Type == DNS_Type.NS {
+					if nsName, err := auth.GetRDATAAsNSRecord(); err == nil {
+						cleanAuth.SetRDATAToNSRecord(nsName)
+					} else {
+						cleanAuth.SetRDATA(auth.GetRDATA())
+					}
+				} else {
+					cleanAuth.SetRDATA(auth.GetRDATA())
+				}
+
+				response.Authority = append(response.Authority, cleanAuth)
+			}
+
+			for _, add := range cnameResp.Additional {
+				cleanAdd := RR.RR{}
+				cleanAdd.SetName(add.GetName())
+				cleanAdd.SetType(add.Type)
+				cleanAdd.SetClass(add.Class)
+				cleanAdd.SetTTL(int(add.GetTTL()))
+
+				if add.Type == DNS_Type.MX {
+					if pref, exchange, err := add.GetRDATAAsMXRecord(); err == nil {
+						cleanAdd.SetRDATAToMXRecord(pref, exchange)
+					} else {
+						cleanAdd.SetRDATA(add.GetRDATA())
+					}
+				} else if add.Type == DNS_Type.PTR {
+					if ptr, err := add.GetRDATAAsPTRRecord(); err == nil {
+						cleanAdd.SetRDATAToPTRRecord(ptr)
+					} else {
+						cleanAdd.SetRDATA(add.GetRDATA())
+					}
+				} else {
+					cleanAdd.SetRDATA(add.GetRDATA())
+				}
+
+				response.Additional = append(response.Additional, cleanAdd)
+			}
 
 			if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
 				s.logger.Error("Failed to set ANCOUNT", slog.Any("error", err))
+			}
+
+			if err := response.Header.SetNSCOUNT(len(response.Authority)); err != nil {
+				s.logger.Error("Failed to set NSCOUNT", slog.Any("error", err))
+			}
+
+			if err := response.Header.SetARCOUNT(len(response.Additional)); err != nil {
+				s.logger.Error("Failed to set ARCOUNT", slog.Any("error", err))
 			}
 
 			return response
