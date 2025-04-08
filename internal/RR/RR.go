@@ -302,12 +302,12 @@ func (rr *RR) GetRDATAAsPTRRecord() (string, error) {
 
 // SetRDATAToSOARecord sets the RR.RDATA for an SOA record
 func (rr *RR) SetRDATAToSOARecord(
-	mname string, // Primary name server
-	rname string, // Responsible authority's mailbox
-	serial uint32, // Version number of the zone file
+	mname string,   // Primary name server
+	rname string,   // Responsible authority's mailbox
+	serial uint32,  // Version number of the zone file
 	refresh uint32, // Time interval before zone should be refreshed
-	retry uint32, // Time interval before failed refresh should be retried
-	expire uint32, // Time when zone is no longer authoritative
+	retry uint32,   // Time interval before failed refresh should be retried
+	expire uint32,  // Time when zone is no longer authoritative
 	minimum uint32) error {
 
 	rr.Type = DNS_Type.SOA
@@ -375,19 +375,19 @@ func (rr *RR) GetRDATAAsSOARecord() (mname string, rname string, serial uint32, 
 	}
 
 	// Extract the 5 uint32 values
-	serial = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+4])
+	serial = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+uint32ByteLength])
 	bytesRead += uint32ByteLength
 
-	refresh = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+4])
+	refresh = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+uint32ByteLength])
 	bytesRead += uint32ByteLength
 
-	retry = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+4])
+	retry = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+uint32ByteLength])
 	bytesRead += uint32ByteLength
 
-	expire = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+4])
+	expire = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+uint32ByteLength])
 	bytesRead += uint32ByteLength
 
-	minimum = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+4])
+	minimum = binary.BigEndian.Uint32(rr.RDATA[bytesRead : bytesRead+uint32ByteLength])
 
 	return mname, rname, serial, refresh, retry, expire, minimum, nil
 }
@@ -477,4 +477,93 @@ func Unmarshal(data []byte, fullPacket []byte) (RR, int, error) {
 	bytesRead += int(a.RDLENGTH)
 
 	return a, bytesRead, nil
+}
+
+// CopyRR creates a deep copy of a resource record, handling all supported DNS types
+func CopyRR(old RR) (RR, error) {
+	newCopy := RR{}
+	newCopy.SetName(old.GetName())
+	newCopy.SetClass(old.Class)
+	if err := newCopy.SetTTL(int(old.GetTTL())); err != nil {
+		return RR{}, fmt.Errorf("failed to set TTL: %w", err)
+	}
+
+	switch old.Type {
+	case DNS_Type.A:
+		ip, err := old.GetRDATAAsARecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get A record: %w", err)
+		}
+		newCopy.SetRDATAToARecord(ip)
+
+	case DNS_Type.NS:
+		ns, err := old.GetRDATAAsNSRecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get NS record: %w", err)
+		}
+		err = newCopy.SetRDATAToNSRecord(ns)
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to set NS record: %w", err)
+		}
+
+	case DNS_Type.CNAME:
+		cname, err := old.GetRDATAAsCNAMERecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get CNAME record: %w", err)
+		}
+		err = newCopy.SetRDATAToCNAMERecord(cname)
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to set CNAME record: %w", err)
+		}
+
+	case DNS_Type.SOA:
+		mname, rname, serial, refresh, retry, expire, minimum, err := old.GetRDATAAsSOARecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get SOA record: %w", err)
+		}
+		err = newCopy.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to set SOA record: %w", err)
+		}
+
+	case DNS_Type.MX:
+		preference, exchange, err := old.GetRDATAAsMXRecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get MX record: %w", err)
+		}
+		err = newCopy.SetRDATAToMXRecord(preference, exchange)
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to set MX record: %w", err)
+		}
+
+	case DNS_Type.TXT:
+		text, err := old.GetRDATAAsTXTRecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get TXT record: %w", err)
+		}
+		newCopy.SetRDATAToTXTRecord(text)
+
+	case DNS_Type.PTR:
+		ptr, err := old.GetRDATAAsPTRRecord()
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to get PTR record: %w", err)
+		}
+		err = newCopy.SetRDATAToPTRRecord(ptr)
+		if err != nil {
+			return RR{}, fmt.Errorf("failed to set PTR record: %w", err)
+		}
+
+	// For types without specific setters/getters (MD, MF, MB, MG, MR, NULL, WKS, HINFO, MINFO),
+	// we'll just copy the raw RDATA
+	case DNS_Type.MD, DNS_Type.MF, DNS_Type.MB, DNS_Type.MG, DNS_Type.MR,
+		DNS_Type.NULL, DNS_Type.WKS, DNS_Type.HINFO, DNS_Type.MINFO:
+		newCopy.SetType(old.Type)
+		newCopy.SetRDATA(old.GetRDATA())
+
+	default:
+		newCopy.SetType(old.Type)
+		newCopy.SetRDATA(old.GetRDATA())
+	}
+
+	return newCopy, nil
 }

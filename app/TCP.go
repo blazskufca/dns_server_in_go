@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/blazskufca/dns_server_in_go/internal/Message"
 	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"github.com/blazskufca/dns_server_in_go/internal/utils"
 	"io"
@@ -31,18 +32,21 @@ func (s *DNSServer) startTCPServer() {
 // handleTCPConnection handles incoming DNS queries on a TCP server.
 // DNS Message's over TCP are prefixed with 2 byte (uint16) message length.
 func (s *DNSServer) handleTCPConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	defer s.wg.Done()
 
-	const lenPrefix = 2
+	const lenPrefix uint8 = 2
+	const timeout = 5 * time.Second
 
-	err := conn.SetDeadline(time.Now().Add(5 * time.Second))
+	err := conn.SetDeadline(time.Now().Add(timeout))
 	if err != nil {
 		s.logger.Error("failed to set connection deadline", slog.Any("error", err))
 		return
 	}
 
-	lenBuf := make([]byte, lenPrefix)
+	lenBuf := make([]byte, lenPrefix, lenPrefix)
 	_, err = io.ReadFull(conn, lenBuf)
 	if err != nil {
 		s.logger.Error("failed to read message length", slog.Any("error", err))
@@ -55,7 +59,7 @@ func (s *DNSServer) handleTCPConnection(conn net.Conn) {
 		return
 	}
 
-	msgBuf := make([]byte, msgLen)
+	msgBuf := make([]byte, msgLen, msgLen)
 	_, err = io.ReadFull(conn, msgBuf)
 	if err != nil {
 		s.logger.Error("failed to read message", slog.Any("error", err))
@@ -73,7 +77,7 @@ func (s *DNSServer) handleTCPConnection(conn net.Conn) {
 			slog.Any("uint16_max", math.MaxUint16))
 		return
 	}
-	lenBytes := make([]byte, lenPrefix)
+	lenBytes := make([]byte, lenPrefix, lenPrefix)
 	binary.BigEndian.PutUint16(lenBytes, uint16(len(response)))
 
 	_, err = conn.Write(append(lenBytes, response...))
@@ -85,15 +89,17 @@ func (s *DNSServer) handleTCPConnection(conn net.Conn) {
 
 // processDNSRequestTCP takes care of incoming DNS request on TCP connection
 func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
-	msg := Message{}
-	err := msg.UnmarshalBinary(data)
+	const firstQuestion uint8 = 0
+	const theRestOfQuestions uint8 = 1
+
+	msg, err := Message.New(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal DNS request: %w", err)
 	}
 
 	s.logger.Debug("Received TCP DNS query",
-		slog.String("question", msg.Questions[0].Name),
-		slog.Any("type", msg.Questions[0].Type))
+		slog.String("question", msg.Questions[firstQuestion].Name),
+		slog.Any("type", msg.Questions[firstQuestion].Type))
 
 	if len(msg.Questions) == 0 {
 		return nil, fmt.Errorf("DNS request contains no questions")
@@ -103,7 +109,7 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 		s.logger.Warn("Multiple questions in TCP request, only processing the first one",
 			slog.Int("question_count", len(msg.Questions)))
 
-		msg.Questions = msg.Questions[:1]
+		msg.Questions = msg.Questions[:theRestOfQuestions]
 		err = msg.Header.SetQDCOUNT(1)
 		if err != nil {
 			s.logger.Error("Failed to update question count", slog.Any("error", err))
@@ -145,19 +151,24 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 
 // forwardToResolverTCP sends a DNS Message to upstream resolver via a TCP connection.
 // As with reading from TCP socket, DNS messages are prefixed with uint16 message length
-func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
-	conn, err := net.DialTimeout("tcp4", s.resolverHost, 5*time.Second)
+func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message.Message, error) {
+	const timeout time.Duration = time.Second * 5
+	const lengthPrefixBytes uint8 = 2
+
+	conn, err := net.DialTimeout("tcp", s.resolverHost, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to resolver via TCP: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
-	err = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	err = conn.SetDeadline(time.Now().Add(timeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
 	}
 
-	lenBuf := make([]byte, 2)
+	lenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes)
 	queryLen := len(query)
 
 	if utils.WouldOverflowUint32(queryLen) {
@@ -171,7 +182,7 @@ func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
 		return nil, fmt.Errorf("failed to send query to resolver via TCP: %w", err)
 	}
 
-	lenBuf = make([]byte, 2)
+	lenBuf = make([]byte, lengthPrefixBytes)
 	_, err = io.ReadFull(conn, lenBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response length from resolver: %w", err)
@@ -182,7 +193,7 @@ func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response from resolver: %w", err)
 	}
-	responseMsg := Message{}
+	responseMsg := Message.Message{}
 	err = responseMsg.UnmarshalBinary(response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response from resolver: %w", err)
@@ -192,7 +203,11 @@ func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message, error) {
 }
 
 // queryNameserverTCP sends a query to a specific nameserver using TCP and returns the response
-func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message) (*Message, error) {
+func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message.Message) (*Message.Message, error) {
+	const timeout time.Duration = time.Second * 5
+	const standardUDPServerPort = 53
+	const lengthPrefixBytes uint8 = 2
+
 	if query == nil {
 		return nil, fmt.Errorf("queryNameServerTCP got nil query")
 	}
@@ -203,21 +218,23 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message) (*Messag
 
 	serverAddr := net.TCPAddr{
 		IP:   serverIP,
-		Port: 53,
+		Port: standardUDPServerPort,
 	}
 
 	conn, err := net.DialTCP("tcp", nil, &serverAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to nameserver %s via TCP: %w", serverIP.String(), err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
-	err = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	err = conn.SetDeadline(time.Now().Add(timeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to set TCP connection deadline: %w", err)
 	}
 
-	lenBuf := make([]byte, 2)
+	lenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes)
 	binary.BigEndian.PutUint16(lenBuf, uint16(len(queryData)))
 
 	_, err = conn.Write(append(lenBuf, queryData...))
@@ -225,7 +242,7 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message) (*Messag
 		return nil, fmt.Errorf("failed to send TCP query to nameserver %s: %w", serverIP.String(), err)
 	}
 
-	respLenBuf := make([]byte, 2)
+	respLenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes)
 	_, err = io.ReadFull(conn, respLenBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read TCP response length from nameserver %s: %w", serverIP.String(), err)
@@ -242,8 +259,7 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message) (*Messag
 		return nil, fmt.Errorf("failed to read TCP response from nameserver %s: %w", serverIP.String(), err)
 	}
 
-	response := &Message{}
-	err = response.UnmarshalBinary(responseData)
+	response, err := Message.New(responseData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal TCP response from nameserver %s: %w", serverIP.String(), err)
 	}
@@ -254,5 +270,5 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message) (*Messag
 		return nil, fmt.Errorf("failed to query nameserver with unexpected message ID: sent %v but got %v",
 			query.Header.GetMessageID(), response.Header.GetMessageID())
 	}
-	return response, nil
+	return &response, nil
 }

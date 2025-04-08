@@ -35,6 +35,8 @@ const (
 	MX Type = 15
 	// TXT represents a text strings
 	TXT Type = 16
+	// AAAA represents a IPv6 host address query
+	AAAA Type = 28
 )
 
 func (t Type) String() string {
@@ -71,6 +73,8 @@ func (t Type) String() string {
 		return "MX - Mail exchange domain"
 	case TXT:
 		return "TXT - Text strings"
+	case AAAA:
+		return "AAAA - IPv6 host addresses"
 	default:
 		return "Unknown"
 	}

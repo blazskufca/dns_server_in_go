@@ -337,45 +337,53 @@ func (h *Header) SetARCOUNT(arcount int) error { // Fixed: parameter name correc
 
 // MarshalBinary marshals a DNS Header into a 12-byte slice
 func (h *Header) MarshalBinary() ([]byte, error) {
-	buf := make([]byte, 12)
+	const headerBytes uint8 = 12
+	const firstByte uint8 = 0
+	const uintSixteenSize uint8 = 2
 
-	copy(buf[0:2], h.ID[:])
+	buf := make([]byte, headerBytes, headerBytes)
 
-	copy(buf[2:4], h.Flags[:])
+	copy(buf[firstByte:uintSixteenSize], h.ID[:])
 
-	binary.BigEndian.PutUint16(buf[4:6], h.GetQDCOUNT())
-	binary.BigEndian.PutUint16(buf[6:8], h.GetANCOUNT())
-	binary.BigEndian.PutUint16(buf[8:10], h.GetNSCOUNT())
-	binary.BigEndian.PutUint16(buf[10:12], h.GetARCOUNT())
+	copy(buf[uintSixteenSize:2*uintSixteenSize], h.Flags[:])
+
+	binary.BigEndian.PutUint16(buf[2*uintSixteenSize:3*uintSixteenSize], h.GetQDCOUNT())
+	binary.BigEndian.PutUint16(buf[3*uintSixteenSize:4*uintSixteenSize], h.GetANCOUNT())
+	binary.BigEndian.PutUint16(buf[4*uintSixteenSize:5*uintSixteenSize], h.GetNSCOUNT())
+	binary.BigEndian.PutUint16(buf[5*uintSixteenSize:6*uintSixteenSize], h.GetARCOUNT())
 
 	return buf, nil
 }
 
 // Unmarshal deserializes a 12-byte slice into a Header
 func Unmarshal(data []byte) (*Header, error) {
-	if len(data) < 12 {
+	const maxHeaderBytes int = 12
+	const firstByte uint8 = 0
+	const uintSixteenSize uint8 = 2
+
+	if len(data) < maxHeaderBytes {
 		return nil, fmt.Errorf("DNS header must be at least 12 bytes, got %d", len(data))
 	}
 
 	h := &Header{}
 
-	copy(h.ID[:], data[0:2])
+	copy(h.ID[:], data[firstByte:uintSixteenSize])
 
-	copy(h.Flags[:], data[2:4])
+	copy(h.Flags[:], data[uintSixteenSize:2*uintSixteenSize])
 
-	err := h.SetQDCOUNT(int(binary.BigEndian.Uint16(data[4:6])))
+	err := h.SetQDCOUNT(int(binary.BigEndian.Uint16(data[2*uintSixteenSize : 3*uintSixteenSize])))
 	if err != nil {
 		return nil, err
 	}
-	err = h.SetANCOUNT(int(binary.BigEndian.Uint16(data[6:8])))
+	err = h.SetANCOUNT(int(binary.BigEndian.Uint16(data[3*uintSixteenSize : 4*uintSixteenSize])))
 	if err != nil {
 		return nil, err
 	}
-	err = h.SetNSCOUNT(int(binary.BigEndian.Uint16(data[8:10])))
+	err = h.SetNSCOUNT(int(binary.BigEndian.Uint16(data[4*uintSixteenSize : 5*uintSixteenSize])))
 	if err != nil {
 		return nil, err
 	}
-	err = h.SetARCOUNT(int(binary.BigEndian.Uint16(data[10:12])))
+	err = h.SetARCOUNT(int(binary.BigEndian.Uint16(data[5*uintSixteenSize : 6*uintSixteenSize])))
 	if err != nil {
 		return nil, err
 	}

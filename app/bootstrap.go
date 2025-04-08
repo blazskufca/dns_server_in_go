@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
+	"github.com/blazskufca/dns_server_in_go/internal/Message"
 	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"log/slog"
 	"net"
@@ -13,7 +14,7 @@ import (
 func (s *DNSServer) bootstrapRootServers() error {
 	s.logger.Info("Bootstrapping root servers from upstream resolver")
 
-	query, err := createDNSQuery(".", DNS_Type.NS, DNS_Class.IN, true)
+	query, err := Message.CreateDNSQuery(".", DNS_Type.NS, DNS_Class.IN, true)
 	if err != nil {
 		return fmt.Errorf("failed to create root servers query: %w", err)
 	}
@@ -26,6 +27,9 @@ func (s *DNSServer) bootstrapRootServers() error {
 	response, err := s.forwardToResolver(queryData)
 	if err != nil {
 		return fmt.Errorf("failed to get root servers from upstream: %w", err)
+	}
+	if response == nil {
+		return fmt.Errorf("bootstrapRootServers get nil response *Message from forwardToResolver")
 	}
 	if response.Header.GetRCODE() != header.NoError {
 		return fmt.Errorf("unexpected response code from upstream: %v", response.Header.GetRCODE())
@@ -128,7 +132,7 @@ func (s *DNSServer) bootstrapRootServers() error {
 
 // resolveNameserver resolves a nameserver hostname to IP addresses using the upstream resolver
 func (s *DNSServer) resolveNameserver(name string) ([]net.IP, error) {
-	query, err := createDNSQuery(name, DNS_Type.A, DNS_Class.IN, true)
+	query, err := Message.CreateDNSQuery(name, DNS_Type.A, DNS_Class.IN, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create nameserver query: %w", err)
 	}
@@ -141,6 +145,9 @@ func (s *DNSServer) resolveNameserver(name string) ([]net.IP, error) {
 	response, err := s.forwardToResolver(queryData)
 	if err != nil {
 		return nil, err
+	}
+	if response == nil {
+		return nil, fmt.Errorf("resolveNameserver got nil response from forwardToResolver")
 	}
 
 	if response.Header.GetRCODE() != header.NoError {

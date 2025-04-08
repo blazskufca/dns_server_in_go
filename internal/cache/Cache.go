@@ -1,6 +1,7 @@
-package main
+package cache
 
 import (
+	"github.com/blazskufca/dns_server_in_go/internal/Message"
 	"log/slog"
 	"math"
 	"sync"
@@ -8,7 +9,7 @@ import (
 )
 
 type cachedResponse struct {
-	message   *Message
+	message   *Message.Message
 	expiresAt time.Time
 }
 
@@ -19,8 +20,8 @@ type DNSCache struct {
 	logger *slog.Logger
 }
 
-// newDNSCache creates a new DNS cache
-func newDNSCache(logger *slog.Logger) *DNSCache {
+// NewDNSCache creates a new DNS cache
+func NewDNSCache(logger *slog.Logger) *DNSCache {
 	cache := &DNSCache{
 		cache:  make(map[string]cachedResponse),
 		logger: logger,
@@ -56,8 +57,8 @@ func (c *DNSCache) cleanup() {
 	}
 }
 
-// get retrieves a cached DNS message if available and not expired
-func (c *DNSCache) get(key string) *Message {
+// Get retrieves a cached DNS message if available and not expired
+func (c *DNSCache) Get(key string) *Message.Message {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -73,9 +74,9 @@ func (c *DNSCache) get(key string) *Message {
 	return entry.message
 }
 
-// put adds a DNS message to the cache with TTL from the record
-func (c *DNSCache) put(key string, msg *Message) {
-	if msg == nil || len(msg.Answers) == 0 {
+// Put adds a DNS message to the cache with TTL from the record
+func (c *DNSCache) Put(key string, msg *Message.Message) {
+	if msg == nil || len(msg.Answers) == 0 || msg.Header.GetQDCOUNT() == 0 {
 		return
 	}
 

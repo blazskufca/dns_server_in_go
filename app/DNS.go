@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
+	"github.com/blazskufca/dns_server_in_go/internal/Message"
 	"github.com/blazskufca/dns_server_in_go/internal/RR"
+	"github.com/blazskufca/dns_server_in_go/internal/cache"
 	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"github.com/blazskufca/dns_server_in_go/internal/question"
 	"log/slog"
@@ -29,7 +31,7 @@ type DNSServer struct {
 	resolverHost string
 	wg           sync.WaitGroup
 	logger       *slog.Logger
-	cache        *DNSCache
+	cache        *cache.DNSCache
 	rootServers  []RootServer
 	recursive    bool
 }
@@ -47,20 +49,20 @@ func New(address string, resolverAddr string, recursive bool, logger *slog.Logge
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
-		udpConn.Close()
+		_ = udpConn.Close()
 		return nil, nil, fmt.Errorf("failed to resolve TCP address: %w", err)
 	}
 
 	tcpListener, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
-		udpConn.Close()
+		_ = udpConn.Close()
 		return nil, nil, fmt.Errorf("failed to listen on TCP address: %w", err)
 	}
 
 	resolver, err := net.ResolveUDPAddr("udp", resolverAddr)
 	if err != nil {
-		udpConn.Close()
-		tcpListener.Close()
+		_ = udpConn.Close()
+		_ = tcpListener.Close()
 		return nil, nil, fmt.Errorf("failed to resolve resolver address: %w", err)
 	}
 
@@ -78,14 +80,14 @@ func New(address string, resolverAddr string, recursive bool, logger *slog.Logge
 		resolverAddr: resolver,
 		resolverHost: resolverAddr,
 		logger:       logger,
-		cache:        newDNSCache(logger),
+		cache:        cache.NewDNSCache(logger),
 		recursive:    recursive,
 	}
 
 	cleanup := func() {
 		server.wg.Wait()
-		udpConn.Close()
-		tcpListener.Close()
+		_ = udpConn.Close()
+		_ = tcpListener.Close()
 	}
 
 	return server, cleanup, nil
@@ -93,6 +95,8 @@ func New(address string, resolverAddr string, recursive bool, logger *slog.Logge
 
 // Start starts the TCP and the UDP servers and starts listening on them for incoming DNS queries.
 func (s *DNSServer) Start() {
+	const udpDNSMessageMaxSize uint16 = 512
+
 	s.logger.Info("Starting DNS server with resolver", slog.Any("resolver", *s.resolverAddr), slog.Any("listener", s.udpConn.LocalAddr()))
 	if s.recursive {
 		err := s.bootstrapRootServers()
@@ -106,7 +110,7 @@ func (s *DNSServer) Start() {
 
 	go s.startTCPServer()
 
-	buf := make([]byte, 512)
+	buf := make([]byte, udpDNSMessageMaxSize, udpDNSMessageMaxSize)
 
 	for {
 		n, addr, err := s.udpConn.ReadFromUDP(buf)
@@ -123,9 +127,11 @@ func (s *DNSServer) Start() {
 
 // handleDNSRequest processes a single DNS request and sends a response
 func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
+	const firstQuestion uint8 = 0
+	const theRestOfQuestions uint8 = 1
+
 	defer s.wg.Done()
-	msg := Message{}
-	err := msg.UnmarshalBinary(data)
+	msg, err := Message.New(data)
 	if err != nil {
 		s.logger.Error("failed to unmarshal DNS request", slog.Any("error", err))
 		s.sendErrorResponse(data, addr, header.FormatError)
@@ -133,8 +139,8 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 	}
 
 	s.logger.Debug("Received DNS query from", slog.Any("from", addr.String()),
-		slog.String("question", msg.Questions[0].Name),
-		slog.Any("type", msg.Questions[0].Type))
+		slog.String("question", msg.Questions[firstQuestion].Name),
+		slog.Any("type", msg.Questions[firstQuestion].Type))
 
 	if len(msg.Questions) == 0 || msg.Header.GetQDCOUNT() == 0 {
 		s.logger.Error("DNS request contains no questions")
@@ -146,7 +152,7 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 		s.logger.Warn("Multiple questions in request, only processing the first one",
 			slog.Int("question_count", len(msg.Questions)))
 
-		msg.Questions = msg.Questions[:1]
+		msg.Questions = msg.Questions[:theRestOfQuestions]
 		err = msg.Header.SetQDCOUNT(1)
 		if err != nil {
 			s.logger.Error("Failed to update question count", slog.Any("error", err))
@@ -157,7 +163,7 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 		resp, err := s.resolveRecursively(&msg)
 		if err != nil {
 			s.logger.Error("Recursive resolution failed",
-				slog.String("question", msg.Questions[0].Name),
+				slog.String("question", msg.Questions[firstQuestion].Name),
 				slog.Any("error", err))
 			s.sendErrorResponse(data, addr, header.ServerFailure)
 			return
@@ -217,8 +223,12 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 			s.sendErrorResponse(data, addr, header.ServerFailure)
 			return
 		}
+		if responseData == nil {
+			s.sendErrorResponse(data, addr, header.ServerFailure)
+			return
+		}
 
-		if len(responseData.Answers) > 0 {
+		if len(responseData.Answers) > 0 && responseData.Header.GetANCOUNT() != 0 {
 			marshalledData, err := responseData.MarshalBinary()
 			if err != nil {
 				s.logger.Error("Error marshalling response", slog.Any("error", err))
@@ -249,10 +259,12 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 }
 
 func (s *DNSServer) sendErrorResponse(data []byte, addr *net.UDPAddr, errorCode header.ResponseCode) {
+	const headerSize int = 12
+
 	var h header.Header
 
-	if len(data) >= 12 {
-		originalHeader, err := header.Unmarshal(data[:12])
+	if len(data) >= headerSize {
+		originalHeader, err := header.Unmarshal(data[:headerSize])
 		if err == nil && originalHeader != nil {
 			h = *originalHeader
 		} else {
@@ -266,14 +278,14 @@ func (s *DNSServer) sendErrorResponse(data []byte, addr *net.UDPAddr, errorCode 
 	h.SetRCODE(errorCode)
 
 	var questions []question.Question
-	if len(data) >= 12 {
-		msg := Message{}
-		if err := msg.UnmarshalBinary(data); err == nil {
+	if len(data) >= headerSize {
+		msg, err := Message.New(data)
+		if err == nil {
 			questions = msg.Questions
 		}
 	}
 
-	errorMsg := Message{
+	errorMsg := Message.Message{
 		Header:    h,
 		Questions: questions,
 		Answers:   []RR.RR{},
@@ -320,47 +332,56 @@ func (s *DNSServer) sendErrorResponse(data []byte, addr *net.UDPAddr, errorCode 
 	}
 }
 
-func (s *DNSServer) forwardToResolver(query []byte) (*Message, error) {
-	conn, err := net.DialTimeout("udp4", s.resolverAddr.String(), 5*time.Second)
+func (s *DNSServer) forwardToResolver(query []byte) (*Message.Message, error) {
+	const udpMaxSize uint16 = 512
+	const dialTimeout time.Duration = time.Second * 5
+
+	conn, err := net.DialTimeout("udp", s.resolverAddr.String(), dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to resolver: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	_, err = conn.Write(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send query to resolver: %w", err)
 	}
 
-	response := make([]byte, 512)
+	response := make([]byte, udpMaxSize, udpMaxSize)
 	n, err := conn.Read(response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response from resolver: %w", err)
 	}
 
-	msg := &Message{}
-	err = msg.UnmarshalBinary(response[:n])
+	msg, err := Message.New(response[:n])
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response from resolver: %w", err)
 	}
 
-	return msg, nil
+	return &msg, nil
 }
 
 // resolveRecursively performs recursive DNS resolution starting from root servers
-func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
+func (s *DNSServer) resolveRecursively(query *Message.Message) (*Message.Message, error) {
+	const startDelegationCount int = 0
+	const maxAcceptableQuestionsCount int = 1
+	const maxAcceptableQuestionsCountUint16 uint16 = uint16(maxAcceptableQuestionsCount)
+	const firstQuestion uint8 = 0
+
 	if query == nil {
 		return nil, errors.New("recursive resolver got nil query")
 	}
-	if len(query.Questions) != 1 || query.Header.GetQDCOUNT() != 1 {
+	if len(query.Questions) != maxAcceptableQuestionsCount || query.Header.GetQDCOUNT() != maxAcceptableQuestionsCountUint16 {
 		return nil, fmt.Errorf("recursive resolution only supports single queryQuestion queries")
 	}
 
-	questionType := query.Questions[0].Type
-	domain := query.Questions[0].Name
+	questionType := query.Questions[firstQuestion].Type
+	domain := query.Questions[firstQuestion].Name
 	cacheKey := fmt.Sprintf("%s:%d", domain, questionType)
 
-	if che := s.cache.get(cacheKey); che != nil {
+	if che := s.cache.Get(cacheKey); che != nil {
 		s.logger.Info("Cache hit", slog.String("domain", domain), slog.Any("type", questionType))
 		che.Header.ID = query.Header.ID
 		return che, nil
@@ -370,16 +391,13 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 		slog.String("domain", domain),
 		slog.Any("type", questionType))
 
-	response := &Message{}
-	response.Header.SetQRFlag(true)
-	response.Header.SetRA(true)
-
 	var nameservers []RootServer
 	for _, root := range s.rootServers {
 		nameservers = append(nameservers, root)
 	}
 
-	result, err := s.resolveWithNameservers(domain, questionType, nameservers, 0, make(map[string]struct{}))
+	result, err := s.resolveWithNameservers(domain, questionType, nameservers, startDelegationCount,
+		make(map[string]struct{}))
 	if err != nil {
 		s.logger.Error("Recursive resolution failed, falling back to upstream resolver",
 			slog.String("domain", domain), slog.Any("error", err))
@@ -392,12 +410,24 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 
 		return s.forwardToResolver(queryData)
 	}
+	if result == nil {
+		s.logger.Error("resolveRecursively got nil result from resolveWithNameservers")
+		query.Header.SetQRFlag(false)
+		queryData, err := query.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal fallback query: %w", err)
+		}
 
-	err = response.Copy(result)
+		return s.forwardToResolver(queryData)
+	}
+
+	response, err := Message.Copy(result)
 	if err != nil {
-		s.logger.Error("Recursive resolution failed, falling back to upstream resolver")
+		return nil, fmt.Errorf("failed to copy a response: %w", err)
 	}
 	response.Header.ID = query.Header.ID
+	response.Header.SetQRFlag(true)
+	response.Header.SetRA(true)
 	response.Header.SetAA(result.Header.IsAA())
 
 	if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
@@ -410,15 +440,17 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 		s.logger.Error("Failed to set ARCOUNT", slog.Any("error", err))
 	}
 
-	s.cache.put(cacheKey, response)
-	return response, nil
+	s.cache.Put(cacheKey, &response)
+	return &response, nil
 }
 
 // resolveWithNameservers recursively resolves a domain by querying nameservers
 func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.Type, nameservers []RootServer,
-	delegationCount int, cnameChain map[string]struct{}) (*Message, error) {
+	delegationCount int, cnameChain map[string]struct{}) (*Message.Message, error) {
 
-	const maxDelegations = 10
+	const maxDelegations int = 10
+	const firstNameServer uint8 = 0
+	const restOfAvailableNameServers uint8 = 1
 
 	if delegationCount >= maxDelegations { // Base case: delegation limit reached
 		return nil, fmt.Errorf("exceeded maximum delegation count (%d)", maxDelegations)
@@ -428,8 +460,8 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 		return nil, fmt.Errorf("no nameservers available to query")
 	}
 
-	server := nameservers[0]
-	remainingServers := nameservers[1:]
+	server := nameservers[firstNameServer]
+	remainingServers := nameservers[restOfAvailableNameServers:]
 
 	s.logger.Debug("Querying nameserver",
 		slog.String("nameserver", server.Name),
@@ -437,7 +469,7 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 		slog.String("domain", domain),
 		slog.Any("type", questionType))
 
-	nsQuery, err := createDNSQuery(domain, questionType, DNS_Class.IN, false)
+	nsQuery, err := Message.CreateDNSQuery(domain, questionType, DNS_Class.IN, false)
 	if err != nil {
 		s.logger.Error("Failed to create nameserver query", slog.Any("error", err))
 		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
@@ -459,7 +491,13 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 
 	if nsResp.Header.GetRCODE() != header.NoError {
 		s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
-		s.sendErrorResponse(nil, s.resolverAddr, nsResp.Header.GetRCODE())
+		nsRespBin, err := nsResp.MarshalBinary()
+		if err != nil {
+			s.logger.Error("Failed to marshal nameserver response", slog.Any("error", err))
+			return nil, err
+		}
+		s.sendErrorResponse(nsRespBin, s.resolverAddr, nsResp.Header.GetRCODE())
+		return nil, nil
 	}
 
 	if nsResp.Header.GetMessageID() != nsQuery.Header.GetMessageID() {
@@ -484,7 +522,12 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 		}
 	}
 
-	if nsResp.Header.IsAA() && len(nsResp.Answers) > 0 {
+	if nsResp.Header.IsAA() && len(nsResp.Answers) > 0 && nsResp.Header.GetANCOUNT() != 0 {
+		if len(nsResp.Answers) != int(nsResp.Header.GetANCOUNT()) {
+			s.logger.Error("Mismatch between ANCOUNT flag and actual answers", slog.Any("ANCOUNT_flag", nsResp.Header.GetANCOUNT()),
+				slog.Any("actual answers", len(nsResp.Answers)))
+			return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+		}
 		s.logger.Info("Found authoritative answer",
 			slog.String("domain", domain),
 			slog.Int("answer_count", len(nsResp.Answers)))
@@ -522,12 +565,16 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 }
 
 // handleCNAMEs should hande the CNAME chains...Except when it does not everything breaks... (This caused me a lot of issues)
-func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsResp *Message, cnameChain map[string]struct{}) *Message {
+func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsResp *Message.Message, cnameChain map[string]struct{}) *Message.Message {
 	if nsResp == nil {
 		return nil
 	}
 
-	response := &Message{
+	if cnameChain == nil {
+		cnameChain = make(map[string]struct{})
+	}
+
+	response := &Message.Message{
 		Header:    nsResp.Header,
 		Questions: nsResp.Questions,
 	}
@@ -569,7 +616,7 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 		}
 		response.Answers = append(response.Answers, ra)
 
-		cnameQuery, err := createDNSQuery(cname, questionType, DNS_Class.IN, false)
+		cnameQuery, err := Message.CreateDNSQuery(cname, questionType, DNS_Class.IN, false)
 		if err != nil {
 			s.logger.Error("Failed to create CNAME query", slog.Any("error", err))
 			return nil
@@ -593,150 +640,28 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 		}
 
 		for _, ans := range cnameResp.Answers {
-			newAns := RR.RR{}
-			newAns.SetName(ans.GetName())
-			newAns.SetType(ans.Type)
-			newAns.SetClass(ans.Class)
-			if err := newAns.SetTTL(int(ans.GetTTL())); err != nil {
-				s.logger.Warn("Failed to set TTL for answer", slog.Any("error", err))
+			deepCopyRR, err := RR.CopyRR(ans)
+			if err != nil {
+				s.logger.Warn("Failed to deep copy Answer RR", slog.Any("error", err))
 				continue
 			}
-			switch ans.Type {
-			case DNS_Type.CNAME:
-				if cnameData, err := ans.GetRDATAAsCNAMERecord(); err == nil {
-					err = newAns.SetRDATAToCNAMERecord(cnameData)
-					if err != nil {
-						s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
-						continue
-					}
-				}
-			case DNS_Type.A:
-				if ip, err := ans.GetRDATAAsARecord(); err == nil {
-					newAns.SetRDATAToARecord(ip)
-				} else {
-					s.logger.Warn("Failed to set A RDATA", slog.Any("error", err))
-					continue
-				}
-			case DNS_Type.TXT:
-				if txt, err := ans.GetRDATAAsTXTRecord(); err == nil {
-					newAns.SetRDATAToTXTRecord(txt)
-				} else {
-					s.logger.Warn("Failed to set TXT RDATA", slog.Any("error", err))
-					continue
-				}
-			case DNS_Type.SOA:
-				mname, rname, serial, refresh, retry, expire, minimum, err := ans.GetRDATAAsSOARecord()
-				if err != nil {
-					s.logger.Warn("Failed to get SOA record", slog.Any("error", err))
-					continue
-				}
-				err = newAns.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
-				if err != nil {
-					s.logger.Warn("Failed to set SOA record", slog.Any("error", err))
-					continue
-				}
-			default:
-				newAns.SetRDATA(ans.GetRDATA())
-			}
-			response.Answers = append(response.Answers, newAns)
+			response.Answers = append(response.Answers, deepCopyRR)
 		}
-
 		for _, auth := range cnameResp.Authority {
-			newAns := RR.RR{}
-			newAns.SetName(auth.GetName())
-			newAns.SetType(auth.Type)
-			newAns.SetClass(auth.Class)
-			if err := newAns.SetTTL(int(auth.GetTTL())); err != nil {
-				s.logger.Warn("Failed to set TTL for answer", slog.Any("error", err))
+			deepCopyRR, err := RR.CopyRR(auth)
+			if err != nil {
+				s.logger.Warn("Failed to deep copy Authority RR", slog.Any("error", err))
 				continue
 			}
-			switch auth.Type {
-			case DNS_Type.CNAME:
-				if cnameData, err := auth.GetRDATAAsCNAMERecord(); err == nil {
-					err = newAns.SetRDATAToCNAMERecord(cnameData)
-					if err != nil {
-						s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
-						continue
-					}
-				}
-			case DNS_Type.A:
-				if ip, err := auth.GetRDATAAsARecord(); err == nil {
-					newAns.SetRDATAToARecord(ip)
-				} else {
-					s.logger.Warn("Failed to set A RDATA", slog.Any("error", err))
-					continue
-				}
-			case DNS_Type.TXT:
-				if txt, err := auth.GetRDATAAsTXTRecord(); err == nil {
-					newAns.SetRDATAToTXTRecord(txt)
-				} else {
-					s.logger.Warn("Failed to set TXT RDATA", slog.Any("error", err))
-					continue
-				}
-			case DNS_Type.SOA:
-				mname, rname, serial, refresh, retry, expire, minimum, err := auth.GetRDATAAsSOARecord()
-				if err != nil {
-					s.logger.Warn("Failed to get SOA record", slog.Any("error", err))
-					continue
-				}
-				err = newAns.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
-				if err != nil {
-					s.logger.Warn("Failed to set SOA record", slog.Any("error", err))
-					continue
-				}
-			default:
-				newAns.SetRDATA(auth.GetRDATA())
-			}
-			response.Authority = append(response.Authority, newAns)
+			response.Authority = append(response.Authority, deepCopyRR)
 		}
-
 		for _, add := range cnameResp.Additional {
-			newAns := RR.RR{}
-			newAns.SetName(add.GetName())
-			newAns.SetType(add.Type)
-			newAns.SetClass(add.Class)
-			if err := newAns.SetTTL(int(add.GetTTL())); err != nil {
-				s.logger.Warn("Failed to set TTL for answer", slog.Any("error", err))
+			deepCopyRR, err := RR.CopyRR(add)
+			if err != nil {
+				s.logger.Warn("Failed to deep copy Authority RR", slog.Any("error", err))
 				continue
 			}
-			switch add.Type {
-			case DNS_Type.CNAME:
-				if cnameData, err := add.GetRDATAAsCNAMERecord(); err == nil {
-					err = newAns.SetRDATAToCNAMERecord(cnameData)
-					if err != nil {
-						s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
-						continue
-					}
-				}
-			case DNS_Type.A:
-				if ip, err := add.GetRDATAAsARecord(); err == nil {
-					newAns.SetRDATAToARecord(ip)
-				} else {
-					s.logger.Warn("Failed to set A RDATA", slog.Any("error", err))
-					continue
-				}
-			case DNS_Type.TXT:
-				if txt, err := add.GetRDATAAsTXTRecord(); err == nil {
-					newAns.SetRDATAToTXTRecord(txt)
-				} else {
-					s.logger.Warn("Failed to set TXT RDATA", slog.Any("error", err))
-					continue
-				}
-			case DNS_Type.SOA:
-				mname, rname, serial, refresh, retry, expire, minimum, err := add.GetRDATAAsSOARecord()
-				if err != nil {
-					s.logger.Warn("Failed to get SOA record", slog.Any("error", err))
-					continue
-				}
-				err = newAns.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
-				if err != nil {
-					s.logger.Warn("Failed to set SOA record", slog.Any("error", err))
-					continue
-				}
-			default:
-				newAns.SetRDATA(add.GetRDATA())
-			}
-			response.Additional = append(response.Additional, newAns)
+			response.Additional = append(response.Additional, deepCopyRR)
 		}
 	}
 
@@ -760,7 +685,7 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 }
 
 // extractAuthorityNameservers extracts NS records from the Authority section and resolves their IP addresses
-func (s *DNSServer) extractAuthorityNameservers(domain string, nsResp *Message) ([]RootServer, bool) {
+func (s *DNSServer) extractAuthorityNameservers(domain string, nsResp *Message.Message) ([]RootServer, bool) {
 	if nsResp == nil {
 		return nil, false
 	}
@@ -848,7 +773,7 @@ func (s *DNSServer) extractAuthorityNameservers(domain string, nsResp *Message) 
 
 // resolveNameserverRecursively resolves a nameserver using recursive resolution
 func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, error) {
-	query, err := createDNSQuery(nameserver, DNS_Type.A, DNS_Class.IN, false)
+	query, err := Message.CreateDNSQuery(nameserver, DNS_Type.A, DNS_Class.IN, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create nameserver query: %w", err)
 	}
@@ -892,7 +817,10 @@ func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, e
 }
 
 // queryNameserver sends a query to a specific nameserver and returns the response
-func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, error) {
+func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message.Message) (*Message.Message, error) {
+	const maxUDPPacketSize uint16 = 512
+	const timeout = 3 * time.Second
+
 	if query == nil {
 		return nil, errors.New("query name server got nil query")
 	}
@@ -914,9 +842,11 @@ func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to nameserver %s: %w", serverIP.String(), err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
-	err = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	err = conn.SetDeadline(time.Now().Add(timeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
 	}
@@ -926,14 +856,13 @@ func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, 
 		return nil, fmt.Errorf("failed to send query to nameserver %s: %w", serverIP.String(), err)
 	}
 
-	responseData := make([]byte, 512)
+	responseData := make([]byte, maxUDPPacketSize, maxUDPPacketSize)
 	n, err := conn.Read(responseData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response from nameserver %s: %w", serverIP.String(), err)
 	}
 
-	response := &Message{}
-	err = response.UnmarshalBinary(responseData[:n])
+	response, err := Message.New(responseData[:n])
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response from nameserver %s: %w", serverIP.String(), err)
 	}
@@ -950,5 +879,5 @@ func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, 
 		return s.queryNameserverTCP(serverIP, query)
 	}
 
-	return response, nil
+	return &response, nil
 }
