@@ -169,7 +169,7 @@ func (s *DNSServer) handleDNSRequest(data []byte, addr *net.UDPAddr) {
 		}
 		if resp.Header.GetRCODE() != header.NoError {
 			s.logger.Error("got unexpected RCODE after recursive resolution", slog.Any("error", resp.Header.GetRCODE()))
-			s.sendErrorResponse(data, addr, header.ServerFailure)
+			s.sendErrorResponse(data, addr, resp.Header.GetRCODE())
 			return
 		}
 
@@ -370,10 +370,7 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 		slog.String("domain", domain),
 		slog.Any("type", questionType))
 
-	response := &Message{
-		Header:    query.Header,
-		Questions: query.Questions,
-	}
+	response := &Message{}
 	response.Header.SetQRFlag(true)
 	response.Header.SetRA(true)
 
@@ -396,9 +393,11 @@ func (s *DNSServer) resolveRecursively(query *Message) (*Message, error) {
 		return s.forwardToResolver(queryData)
 	}
 
-	response.Answers = result.Answers
-	response.Authority = result.Authority
-	response.Additional = result.Additional
+	err = response.Copy(result)
+	if err != nil {
+		s.logger.Error("Recursive resolution failed, falling back to upstream resolver")
+	}
+	response.Header.ID = query.Header.ID
 	response.Header.SetAA(result.Header.IsAA())
 
 	if err := response.Header.SetANCOUNT(len(response.Answers)); err != nil {
@@ -460,7 +459,7 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 
 	if nsResp.Header.GetRCODE() != header.NoError {
 		s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
-		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+		s.sendErrorResponse(nil, s.resolverAddr, nsResp.Header.GetRCODE())
 	}
 
 	if nsResp.Header.GetMessageID() != nsQuery.Header.GetMessageID() {
@@ -514,7 +513,11 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 	if len(remainingServers) > 0 { // If no authority records found, try next nameserver at current level
 		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
 	}
-	fmt.Println(nsResp)
+	if nsResp.Header.GetRCODE() != header.NoError {
+		s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
+		s.sendErrorResponse(nil, s.resolverAddr, nsResp.Header.GetRCODE())
+		return nil, nil
+	}
 	return nil, fmt.Errorf("all nameservers exhausted without finding an answer")
 }
 
@@ -892,6 +895,10 @@ func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, e
 func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message) (*Message, error) {
 	if query == nil {
 		return nil, errors.New("query name server got nil query")
+	}
+	err := query.Header.SetRandomID()
+	if err != nil {
+		return nil, err
 	}
 	queryData, err := query.MarshalBinary()
 	if err != nil {

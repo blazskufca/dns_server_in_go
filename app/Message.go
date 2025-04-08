@@ -135,6 +135,286 @@ func (msg *Message) MarshalBinary() ([]byte, error) {
 	return result, nil
 }
 
+func (msg *Message) Copy(source *Message) error {
+	if msg == nil {
+		return errors.New("copy got nil message")
+	}
+	msg.Header = source.Header
+	msg.Questions = source.Questions
+	msg.Answers = make([]RR.RR, len(source.Answers), len(source.Answers))
+	msg.Authority = make([]RR.RR, len(source.Authority), len(source.Authority))
+	msg.Additional = make([]RR.RR, len(source.Additional), len(source.Additional))
+
+	for i, a := range source.Answers {
+		newA := RR.RR{}
+		newA.Class = a.Class
+		newA.TTL = a.TTL
+		newA.Name = a.Name
+
+		switch a.Type {
+		case DNS_Type.A:
+			ip, err := a.GetRDATAAsARecord()
+			if err != nil {
+				return err
+			}
+			newA.SetRDATAToARecord(ip)
+
+		case DNS_Type.NS:
+			ns, err := a.GetRDATAAsNSRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToNSRecord(ns)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.CNAME:
+			cname, err := a.GetRDATAAsCNAMERecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToCNAMERecord(cname)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.SOA:
+			mname, rname, serial, refresh, retry, expire, minimum, err := a.GetRDATAAsSOARecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.MX:
+			preference, exchange, err := a.GetRDATAAsMXRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToMXRecord(preference, exchange)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.TXT:
+			text, err := a.GetRDATAAsTXTRecord()
+			if err != nil {
+				return err
+			}
+			newA.SetRDATAToTXTRecord(text)
+
+		case DNS_Type.PTR:
+			ptr, err := a.GetRDATAAsPTRRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToPTRRecord(ptr)
+			if err != nil {
+				return err
+			}
+
+		// For types without specific setters/getters (MD, MF, MB, MG, MR, NULL, WKS, HINFO, MINFO),
+		// we'll just copy the raw RDATA
+		case DNS_Type.MD, DNS_Type.MF, DNS_Type.MB, DNS_Type.MG, DNS_Type.MR,
+			DNS_Type.NULL, DNS_Type.WKS, DNS_Type.HINFO, DNS_Type.MINFO:
+			newA.Type = a.Type
+			newA.SetRDATA(a.GetRDATA())
+
+		default:
+			// For any unhandled types, copy the raw RDATA and type
+			newA.Type = a.Type
+			newA.SetRDATA(a.GetRDATA())
+		}
+		msg.Answers[i] = newA
+	}
+	for i, a := range source.Authority {
+		newA := RR.RR{}
+		newA.Class = a.Class
+		newA.TTL = a.TTL
+		newA.Name = a.Name
+
+		switch a.Type {
+		case DNS_Type.A:
+			ip, err := a.GetRDATAAsARecord()
+			if err != nil {
+				return err
+			}
+			newA.SetRDATAToARecord(ip)
+
+		case DNS_Type.NS:
+			ns, err := a.GetRDATAAsNSRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToNSRecord(ns)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.CNAME:
+			cname, err := a.GetRDATAAsCNAMERecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToCNAMERecord(cname)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.SOA:
+			mname, rname, serial, refresh, retry, expire, minimum, err := a.GetRDATAAsSOARecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.MX:
+			preference, exchange, err := a.GetRDATAAsMXRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToMXRecord(preference, exchange)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.TXT:
+			text, err := a.GetRDATAAsTXTRecord()
+			if err != nil {
+				return err
+			}
+			newA.SetRDATAToTXTRecord(text)
+
+		case DNS_Type.PTR:
+			ptr, err := a.GetRDATAAsPTRRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToPTRRecord(ptr)
+			if err != nil {
+				return err
+			}
+
+		// For types without specific setters/getters (MD, MF, MB, MG, MR, NULL, WKS, HINFO, MINFO),
+		// we'll just copy the raw RDATA
+		case DNS_Type.MD, DNS_Type.MF, DNS_Type.MB, DNS_Type.MG, DNS_Type.MR,
+			DNS_Type.NULL, DNS_Type.WKS, DNS_Type.HINFO, DNS_Type.MINFO:
+			newA.Type = a.Type
+			newA.SetRDATA(a.GetRDATA())
+
+		default:
+			// For any unhandled types, copy the raw RDATA and type
+			newA.Type = a.Type
+			newA.SetRDATA(a.GetRDATA())
+		}
+		msg.Authority[i] = newA
+	}
+	for i, a := range source.Additional {
+		newA := RR.RR{}
+		newA.Class = a.Class
+		newA.TTL = a.TTL
+		newA.Name = a.Name
+
+		switch a.Type {
+		case DNS_Type.A:
+			ip, err := a.GetRDATAAsARecord()
+			if err != nil {
+				return err
+			}
+			newA.SetRDATAToARecord(ip)
+
+		case DNS_Type.NS:
+			ns, err := a.GetRDATAAsNSRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToNSRecord(ns)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.CNAME:
+			cname, err := a.GetRDATAAsCNAMERecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToCNAMERecord(cname)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.SOA:
+			mname, rname, serial, refresh, retry, expire, minimum, err := a.GetRDATAAsSOARecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToSOARecord(mname, rname, serial, refresh, retry, expire, minimum)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.MX:
+			preference, exchange, err := a.GetRDATAAsMXRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToMXRecord(preference, exchange)
+			if err != nil {
+				return err
+			}
+
+		case DNS_Type.TXT:
+			text, err := a.GetRDATAAsTXTRecord()
+			if err != nil {
+				return err
+			}
+			newA.SetRDATAToTXTRecord(text)
+
+		case DNS_Type.PTR:
+			ptr, err := a.GetRDATAAsPTRRecord()
+			if err != nil {
+				return err
+			}
+			err = newA.SetRDATAToPTRRecord(ptr)
+			if err != nil {
+				return err
+			}
+
+		// For types without specific setters/getters (MD, MF, MB, MG, MR, NULL, WKS, HINFO, MINFO),
+		// we'll just copy the raw RDATA
+		case DNS_Type.MD, DNS_Type.MF, DNS_Type.MB, DNS_Type.MG, DNS_Type.MR,
+			DNS_Type.NULL, DNS_Type.WKS, DNS_Type.HINFO, DNS_Type.MINFO:
+			newA.Type = a.Type
+			newA.SetRDATA(a.GetRDATA())
+
+		default:
+			// For any unhandled types, copy the raw RDATA and type
+			newA.Type = a.Type
+			newA.SetRDATA(a.GetRDATA())
+		}
+		msg.Additional[i] = newA
+	}
+	err := msg.Header.SetANCOUNT(len(msg.Answers))
+	if err != nil {
+		return err
+	}
+	err = msg.Header.SetARCOUNT(len(msg.Additional))
+	if err != nil {
+		return err
+	}
+	err = msg.Header.SetNSCOUNT(len(msg.Authority))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // AddQuestion adds a question to the Message.Questions slice and increments the Message.Header.QDCOUNT
 func (msg *Message) AddQuestion(q question.Question) error {
 	msg.Questions = append(msg.Questions, q)
