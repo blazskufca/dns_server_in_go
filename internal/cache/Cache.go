@@ -14,10 +14,11 @@ type cachedResponse struct {
 }
 
 // DNSCache represents a simple cache for DNS records
+
 type DNSCache struct {
-	mu     sync.RWMutex
 	cache  map[string]cachedResponse
 	logger *slog.Logger
+	mu     sync.RWMutex
 }
 
 // NewDNSCache creates a new DNS cache

@@ -24,15 +24,15 @@ type RootServer struct {
 	IP   net.IP
 }
 
-type DNSServer struct {
-	udpConn      *net.UDPConn
+type DNSServer struct { //nolint:govet
+	rootServers  []RootServer
 	tcpListener  net.Listener
-	resolverAddr *net.UDPAddr
 	resolverHost string
-	wg           sync.WaitGroup
+	udpConn      *net.UDPConn
+	resolverAddr *net.UDPAddr
 	logger       *slog.Logger
 	cache        *cache.DNSCache
-	rootServers  []RootServer
+	wg           sync.WaitGroup
 	recursive    bool
 }
 
@@ -110,7 +110,7 @@ func (s *DNSServer) Start() {
 
 	go s.startTCPServer()
 
-	buf := make([]byte, udpDNSMessageMaxSize, udpDNSMessageMaxSize)
+	buf := make([]byte, udpDNSMessageMaxSize, udpDNSMessageMaxSize) //nolint:gosimple
 
 	for {
 		n, addr, err := s.udpConn.ReadFromUDP(buf)
@@ -349,7 +349,7 @@ func (s *DNSServer) forwardToResolver(query []byte) (*Message.Message, error) {
 		return nil, fmt.Errorf("failed to send query to resolver: %w", err)
 	}
 
-	response := make([]byte, udpMaxSize, udpMaxSize)
+	response := make([]byte, udpMaxSize, udpMaxSize) //nolint:gosimple
 	n, err := conn.Read(response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response from resolver: %w", err)
@@ -392,9 +392,7 @@ func (s *DNSServer) resolveRecursively(query *Message.Message) (*Message.Message
 		slog.Any("type", questionType))
 
 	var nameservers []RootServer
-	for _, root := range s.rootServers {
-		nameservers = append(nameservers, root)
-	}
+	nameservers = append(nameservers, s.rootServers...)
 
 	result, err := s.resolveWithNameservers(domain, questionType, nameservers, startDelegationCount,
 		make(map[string]struct{}))
@@ -403,8 +401,8 @@ func (s *DNSServer) resolveRecursively(query *Message.Message) (*Message.Message
 			slog.String("domain", domain), slog.Any("error", err))
 
 		query.Header.SetQRFlag(false)
-		queryData, err := query.MarshalBinary()
-		if err != nil {
+		queryData, errMarshal := query.MarshalBinary()
+		if errMarshal != nil {
 			return nil, fmt.Errorf("failed to marshal fallback query: %w", err)
 		}
 
@@ -413,8 +411,8 @@ func (s *DNSServer) resolveRecursively(query *Message.Message) (*Message.Message
 	if result == nil {
 		s.logger.Error("resolveRecursively got nil result from resolveWithNameservers")
 		query.Header.SetQRFlag(false)
-		queryData, err := query.MarshalBinary()
-		if err != nil {
+		queryData, errMarshal := query.MarshalBinary()
+		if errMarshal != nil {
 			return nil, fmt.Errorf("failed to marshal fallback query: %w", err)
 		}
 
@@ -606,11 +604,11 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 		ra.SetName(domain)
 		ra.SetType(DNS_Type.CNAME)
 		ra.SetClass(DNS_Class.IN)
-		if err := ra.SetTTL(int(answer.GetTTL())); err != nil {
+		if errSetTTL := ra.SetTTL(int(answer.GetTTL())); errSetTTL != nil {
 			s.logger.Warn("Failed to set TTL", slog.Any("error", err))
 			return nil
 		}
-		if err := ra.SetRDATAToCNAMERecord(cname); err != nil {
+		if errSetRdata := ra.SetRDATAToCNAMERecord(cname); errSetRdata != nil {
 			s.logger.Warn("Failed to set CNAME record", slog.Any("error", err))
 			return nil
 		}
@@ -856,7 +854,7 @@ func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message.Message) (*M
 		return nil, fmt.Errorf("failed to send query to nameserver %s: %w", serverIP.String(), err)
 	}
 
-	responseData := make([]byte, maxUDPPacketSize, maxUDPPacketSize)
+	responseData := make([]byte, maxUDPPacketSize, maxUDPPacketSize) // nolint:gosimple
 	n, err := conn.Read(responseData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response from nameserver %s: %w", serverIP.String(), err)

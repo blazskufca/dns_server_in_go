@@ -46,7 +46,7 @@ func (s *DNSServer) handleTCPConnection(conn net.Conn) {
 		return
 	}
 
-	lenBuf := make([]byte, lenPrefix, lenPrefix)
+	lenBuf := make([]byte, lenPrefix, lenPrefix) //nolint:gosimple
 	_, err = io.ReadFull(conn, lenBuf)
 	if err != nil {
 		s.logger.Error("failed to read message length", slog.Any("error", err))
@@ -59,7 +59,7 @@ func (s *DNSServer) handleTCPConnection(conn net.Conn) {
 		return
 	}
 
-	msgBuf := make([]byte, msgLen, msgLen)
+	msgBuf := make([]byte, msgLen, msgLen) //nolint:gosimple
 	_, err = io.ReadFull(conn, msgBuf)
 	if err != nil {
 		s.logger.Error("failed to read message", slog.Any("error", err))
@@ -77,7 +77,7 @@ func (s *DNSServer) handleTCPConnection(conn net.Conn) {
 			slog.Any("uint16_max", math.MaxUint16))
 		return
 	}
-	lenBytes := make([]byte, lenPrefix, lenPrefix)
+	lenBytes := make([]byte, lenPrefix, lenPrefix) //nolint:gosimple
 	binary.BigEndian.PutUint16(lenBytes, uint16(len(response)))
 
 	_, err = conn.Write(append(lenBytes, response...))
@@ -168,7 +168,7 @@ func (s *DNSServer) forwardToResolverTCP(query []byte) (*Message.Message, error)
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
 	}
 
-	lenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes)
+	lenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes) //nolint:gosimple
 	queryLen := len(query)
 
 	if utils.WouldOverflowUint32(queryLen) {
@@ -234,7 +234,7 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message.Message) 
 		return nil, fmt.Errorf("failed to set TCP connection deadline: %w", err)
 	}
 
-	lenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes)
+	lenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes) //nolint:gosimple
 	binary.BigEndian.PutUint16(lenBuf, uint16(len(queryData)))
 
 	_, err = conn.Write(append(lenBuf, queryData...))
@@ -242,7 +242,7 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message.Message) 
 		return nil, fmt.Errorf("failed to send TCP query to nameserver %s: %w", serverIP.String(), err)
 	}
 
-	respLenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes)
+	respLenBuf := make([]byte, lengthPrefixBytes, lengthPrefixBytes) //nolint:gosimple
 	_, err = io.ReadFull(conn, respLenBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read TCP response length from nameserver %s: %w", serverIP.String(), err)

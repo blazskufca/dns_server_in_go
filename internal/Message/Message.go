@@ -13,11 +13,11 @@ import (
 
 // Message represents a DNS message.
 type Message struct {
-	Header     header.Header
 	Questions  []question.Question
 	Answers    []RR.RR
 	Authority  []RR.RR
 	Additional []RR.RR
+	Header     header.Header
 }
 
 // UnmarshalBinary unmarshalls the Message from binary format which was sent across the wire.
@@ -143,9 +143,9 @@ func Copy(source *Message) (Message, error) {
 	msg := Message{}
 	msg.Header = source.Header
 	msg.Questions = source.Questions
-	msg.Answers = make([]RR.RR, len(source.Answers), len(source.Answers))
-	msg.Authority = make([]RR.RR, len(source.Authority), len(source.Authority))
-	msg.Additional = make([]RR.RR, len(source.Additional), len(source.Additional))
+	msg.Answers = make([]RR.RR, len(source.Answers), len(source.Answers))          // nolint:gosimple
+	msg.Authority = make([]RR.RR, len(source.Authority), len(source.Authority))    // nolint:gosimple
+	msg.Additional = make([]RR.RR, len(source.Additional), len(source.Additional)) // nolint:gosimple
 
 	for i, a := range source.Answers {
 		newA, err := RR.CopyRR(a)

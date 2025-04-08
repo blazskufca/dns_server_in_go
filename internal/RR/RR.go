@@ -30,12 +30,12 @@ https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
 */
 type RR struct {
 	Name       string
+	fullPacket []byte
+	RDATA      []byte
 	Type       DNS_Type.Type
 	Class      DNS_Class.Class
 	TTL        uint32
 	RDLENGTH   uint16
-	RDATA      []byte
-	fullPacket []byte
 }
 
 // SetName sets the RR.Name which is the set of labels.
@@ -424,7 +424,6 @@ func (rr *RR) MarshalBinary() ([]byte, error) {
 	offset += uint32ByteLength
 
 	binary.BigEndian.PutUint16(buf[offset:offset+uint16ByteLength], rr.RDLENGTH)
-	offset += uint16ByteLength
 
 	buf = append(buf, rr.RDATA...)
 

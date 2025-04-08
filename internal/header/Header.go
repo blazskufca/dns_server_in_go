@@ -341,7 +341,7 @@ func (h *Header) MarshalBinary() ([]byte, error) {
 	const firstByte uint8 = 0
 	const uintSixteenSize uint8 = 2
 
-	buf := make([]byte, headerBytes, headerBytes)
+	buf := make([]byte, headerBytes, headerBytes) //nolint:gosimple
 
 	copy(buf[firstByte:uintSixteenSize], h.ID[:])
 
