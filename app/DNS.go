@@ -554,11 +554,6 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 	if len(remainingServers) > 0 { // If no authority records found, try next nameserver at current level
 		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
 	}
-	if nsResp.Header.GetRCODE() != header.NoError {
-		s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
-		s.sendErrorResponse(nil, s.resolverAddr, nsResp.Header.GetRCODE())
-		return nil, nil
-	}
 	return nil, fmt.Errorf("all nameservers exhausted without finding an answer")
 }
 
