@@ -23,6 +23,16 @@ type Message struct {
 // UnmarshalBinary unmarshalls the Message from binary format which was sent across the wire.
 // It fulfills the encoding.BinaryUnmarshaler interface.
 func (msg *Message) UnmarshalBinary(buf []byte) error {
+	if buf == nil {
+		return errors.New("Message.UnmarshalBinary: nil buffer")
+	}
+	if len(buf) == 0 {
+		return errors.New("Message.UnmarshalBinary: empty buffer")
+	}
+	if len(buf) < 12 {
+		return errors.New("Message.UnmarshalBinary: buffer too short")
+	}
+
 	curOffset := 12
 
 	unmarshalledHeader, err := header.Unmarshal(buf[:curOffset])
@@ -38,8 +48,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 	for i := 0; i < int(msg.Header.GetQDCOUNT()); i++ {
 		q, bytesRead, err := question.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
-			fmt.Println("Failed to unmarshal question:", err)
-			continue
+			return err
 		}
 		msg.Questions[i] = q
 		curOffset += bytesRead
@@ -52,8 +61,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		}
 		ans, bytesRead, err := RR.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
-			fmt.Println("Failed to unmarshal answer:", err)
-			break
+			return err
 		}
 		msg.Answers = append(msg.Answers, ans)
 		curOffset += bytesRead
@@ -66,8 +74,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		}
 		auth, bytesRead, err := RR.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
-			fmt.Println("Failed to unmarshal authority:", err)
-			break
+			return err
 		}
 		msg.Authority = append(msg.Authority, auth)
 		curOffset += bytesRead
@@ -80,8 +87,7 @@ func (msg *Message) UnmarshalBinary(buf []byte) error {
 		}
 		add, bytesRead, err := RR.Unmarshal(buf[curOffset:], buf)
 		if err != nil {
-			fmt.Println("Failed to unmarshal additional:", err)
-			break
+			return err
 		}
 		msg.Additional = append(msg.Additional, add)
 		curOffset += bytesRead
