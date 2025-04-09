@@ -11,7 +11,7 @@ func TestQuestion_SetName(t *testing.T) {
 	q := Question{}
 	q.SetName("example.com")
 	if q.Name != "example.com" {
-		t.Errorf("Expected Name to be 'example.com', got '%s'", q.Name)
+		t.Fatalf("Expected Name to be 'example.com', got '%s'", q.Name)
 	}
 }
 
@@ -19,7 +19,7 @@ func TestQuestion_SetType(t *testing.T) {
 	q := Question{}
 	q.SetType(DNS_Type.A)
 	if q.Type != DNS_Type.A {
-		t.Errorf("Expected Type to be A (%d), got %d", DNS_Type.A, q.Type)
+		t.Fatalf("Expected Type to be A (%d), got %d", DNS_Type.A, q.Type)
 	}
 }
 
@@ -27,7 +27,7 @@ func TestQuestion_SetClass(t *testing.T) {
 	q := Question{}
 	q.SetClass(DNS_Class.IN)
 	if q.Class != DNS_Class.IN {
-		t.Errorf("Expected Class to be IN (%d), got %d", DNS_Class.IN, q.Class)
+		t.Fatalf("Expected Class to be IN (%d), got %d", DNS_Class.IN, q.Class)
 	}
 }
 
@@ -83,7 +83,7 @@ func TestQuestion_MarshalBinary(t *testing.T) {
 			}
 
 			if !bytes.Equal(data, tc.expected) {
-				t.Errorf("Expected %v, got %v", tc.expected, data)
+				t.Fatalf("Expected %v, got %v", tc.expected, data)
 			}
 		})
 	}
@@ -144,19 +144,19 @@ func TestUnmarshal(t *testing.T) {
 			}
 
 			if bytesRead != tc.bytesRead {
-				t.Errorf("Expected bytesRead to be %d, got %d", tc.bytesRead, bytesRead)
+				t.Fatalf("Expected bytesRead to be %d, got %d", tc.bytesRead, bytesRead)
 			}
 
 			if q.Name != tc.expected.Name {
-				t.Errorf("Expected Name to be '%s', got '%s'", tc.expected.Name, q.Name)
+				t.Fatalf("Expected Name to be '%s', got '%s'", tc.expected.Name, q.Name)
 			}
 
 			if q.Type != tc.expected.Type {
-				t.Errorf("Expected Type to be %d, got %d", tc.expected.Type, q.Type)
+				t.Fatalf("Expected Type to be %d, got %d", tc.expected.Type, q.Type)
 			}
 
 			if q.Class != tc.expected.Class {
-				t.Errorf("Expected Class to be %d, got %d", tc.expected.Class, q.Class)
+				t.Fatalf("Expected Class to be %d, got %d", tc.expected.Class, q.Class)
 			}
 		})
 	}
@@ -195,17 +195,17 @@ func TestUnmarshal_WithCompression(t *testing.T) {
 	}
 
 	if q.Name != expected.Name {
-		t.Errorf("Expected Name to be '%s', got '%s'", expected.Name, q.Name)
+		t.Fatalf("Expected Name to be '%s', got '%s'", expected.Name, q.Name)
 	}
 	if q.Type != expected.Type {
-		t.Errorf("Expected Type to be %d, got %d", expected.Type, q.Type)
+		t.Fatalf("Expected Type to be %d, got %d", expected.Type, q.Type)
 	}
 	if q.Class != expected.Class {
-		t.Errorf("Expected Class to be %d, got %d", expected.Class, q.Class)
+		t.Fatalf("Expected Class to be %d, got %d", expected.Class, q.Class)
 	}
 
 	if bytesRead != len(fullPacket[19:]) {
-		t.Errorf("Expected bytesRead to be 10, got %d", bytesRead)
+		t.Fatalf("Expected bytesRead to be 10, got %d", bytesRead)
 	}
 }
 
@@ -234,15 +234,15 @@ func TestQuestion_RoundTrip(t *testing.T) {
 		}
 
 		if parsed.Name != original.Name {
-			t.Errorf("Expected Name to be '%s', got '%s'", original.Name, parsed.Name)
+			t.Fatalf("Expected Name to be '%s', got '%s'", original.Name, parsed.Name)
 		}
 
 		if parsed.Type != original.Type {
-			t.Errorf("Expected Type to be %d, got %d", original.Type, parsed.Type)
+			t.Fatalf("Expected Type to be %d, got %d", original.Type, parsed.Type)
 		}
 
 		if parsed.Class != original.Class {
-			t.Errorf("Expected Class to be %d, got %d", original.Class, parsed.Class)
+			t.Fatalf("Expected Class to be %d, got %d", original.Class, parsed.Class)
 		}
 	}
 }

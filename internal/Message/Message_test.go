@@ -58,14 +58,14 @@ func TestCreateDNSQuery(t *testing.T) {
 			}
 
 			if msg.Header.IsResponse() != false {
-				t.Errorf("Expected QR flag to be false, got true")
+				t.Fatalf("Expected QR flag to be false, got true")
 			}
 			if msg.Header.IsRD() != tc.desireRecursion {
-				t.Errorf("Expected RD flag to be %v, got %v", tc.desireRecursion, msg.Header.IsRD())
+				t.Fatalf("Expected RD flag to be %v, got %v", tc.desireRecursion, msg.Header.IsRD())
 			}
 
 			if msg.Header.GetQDCOUNT() != 1 {
-				t.Errorf("Expected QDCOUNT to be 1, got %d", msg.Header.GetQDCOUNT())
+				t.Fatalf("Expected QDCOUNT to be 1, got %d", msg.Header.GetQDCOUNT())
 			}
 
 			if len(msg.Questions) != 1 {
@@ -73,13 +73,13 @@ func TestCreateDNSQuery(t *testing.T) {
 			}
 			q := msg.Questions[0]
 			if q.Name != tc.domainName {
-				t.Errorf("Expected question name %s, got %s", tc.domainName, q.Name)
+				t.Fatalf("Expected question name %s, got %s", tc.domainName, q.Name)
 			}
 			if q.Type != tc.qtype {
-				t.Errorf("Expected question type %d, got %d", tc.qtype, q.Type)
+				t.Fatalf("Expected question type %d, got %d", tc.qtype, q.Type)
 			}
 			if q.Class != tc.qclass {
-				t.Errorf("Expected question class %d, got %d", tc.qclass, q.Class)
+				t.Fatalf("Expected question class %d, got %d", tc.qclass, q.Class)
 			}
 		})
 	}
@@ -115,29 +115,29 @@ func TestMarshalUnmarshal(t *testing.T) {
 	}
 
 	if unmarshaledMsg.Header.IsQuery() != msg.Header.IsQuery() {
-		t.Errorf("QR flag mismatch")
+		t.Fatalf("QR flag mismatch")
 	}
 	if unmarshaledMsg.Header.IsRD() != msg.Header.IsRD() {
-		t.Errorf("RD flag mismatch")
+		t.Fatalf("RD flag mismatch")
 	}
 	if unmarshaledMsg.Header.GetQDCOUNT() != msg.Header.GetQDCOUNT() {
-		t.Errorf("QDCOUNT mismatch")
+		t.Fatalf("QDCOUNT mismatch")
 	}
 	if len(unmarshaledMsg.Questions) != len(msg.Questions) {
-		t.Errorf("Question count mismatch")
+		t.Fatalf("Question count mismatch")
 	}
 	if msg.Header.GetMessageID() != unmarshaledMsg.Header.GetMessageID() {
-		t.Errorf("Message ID mismatch")
+		t.Fatalf("Message ID mismatch")
 	}
 	for i := 0; i < len(msg.Questions); i++ {
 		if unmarshaledMsg.Questions[i].Name != msg.Questions[i].Name {
-			t.Errorf("Question name mismatch")
+			t.Fatalf("Question name mismatch")
 		}
 		if unmarshaledMsg.Questions[i].Type != msg.Questions[i].Type {
-			t.Errorf("Question type mismatch")
+			t.Fatalf("Question type mismatch")
 		}
 		if unmarshaledMsg.Questions[i].Class != msg.Questions[i].Class {
-			t.Errorf("Question class mismatch")
+			t.Fatalf("Question class mismatch")
 		}
 	}
 }
@@ -201,25 +201,25 @@ func TestCopy(t *testing.T) {
 	}
 
 	if copyMsg.Header.GetMessageID() != original.Header.GetMessageID() {
-		t.Errorf("Header ID mismatch")
+		t.Fatalf("Header ID mismatch")
 	}
 
 	if copyMsg.Header.GetQDCOUNT() != original.Header.GetQDCOUNT() {
-		t.Errorf("QDCOUNT mismatch")
+		t.Fatalf("QDCOUNT mismatch")
 	}
 	if copyMsg.Header.GetANCOUNT() != original.Header.GetANCOUNT() {
-		t.Errorf("ANCOUNT mismatch")
+		t.Fatalf("ANCOUNT mismatch")
 	}
 	if copyMsg.Header.GetNSCOUNT() != original.Header.GetNSCOUNT() {
-		t.Errorf("NSCOUNT mismatch")
+		t.Fatalf("NSCOUNT mismatch")
 	}
 	if copyMsg.Header.GetARCOUNT() != original.Header.GetARCOUNT() {
-		t.Errorf("ARCOUNT mismatch")
+		t.Fatalf("ARCOUNT mismatch")
 	}
 
 	_, err = Copy(nil)
 	if err == nil {
-		t.Errorf("Expected error when copying nil message, got nil")
+		t.Fatalf("Expected error when copying nil message, got nil")
 	}
 }
 
@@ -257,7 +257,7 @@ func TestUnmarshalMalformedMessages(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := New(tc.data)
 			if (err != nil) != tc.expectErr {
-				t.Errorf("Expected error: %v, got: %v", tc.expectErr, err)
+				t.Fatalf("Expected error: %v, got: %v", tc.expectErr, err)
 			}
 		})
 	}
@@ -311,10 +311,10 @@ func TestMessageWithManyRecords(t *testing.T) {
 	}
 
 	if len(unmarshaledMsg.Questions) != 10 {
-		t.Errorf("Expected 10 questions, got %d", len(unmarshaledMsg.Questions))
+		t.Fatalf("Expected 10 questions, got %d", len(unmarshaledMsg.Questions))
 	}
 	if len(unmarshaledMsg.Answers) != 15 {
-		t.Errorf("Expected 15 answers, got %d", len(unmarshaledMsg.Answers))
+		t.Fatalf("Expected 15 answers, got %d", len(unmarshaledMsg.Answers))
 	}
 }
 
@@ -406,7 +406,7 @@ func TestAddQuestion(t *testing.T) {
 	}
 
 	if msg.Header.GetQDCOUNT() != 0 {
-		t.Errorf("Initial QDCOUNT should be 0, got %d", msg.Header.GetQDCOUNT())
+		t.Fatalf("Initial QDCOUNT should be 0, got %d", msg.Header.GetQDCOUNT())
 	}
 
 	q1 := question.Question{}
@@ -419,7 +419,7 @@ func TestAddQuestion(t *testing.T) {
 	}
 
 	if msg.Header.GetQDCOUNT() != 1 {
-		t.Errorf("After adding 1 question, QDCOUNT should be 1, got %d", msg.Header.GetQDCOUNT())
+		t.Fatalf("After adding 1 question, QDCOUNT should be 1, got %d", msg.Header.GetQDCOUNT())
 	}
 
 	q2 := question.Question{}
@@ -432,17 +432,17 @@ func TestAddQuestion(t *testing.T) {
 	}
 
 	if msg.Header.GetQDCOUNT() != 2 {
-		t.Errorf("After adding 2 questions, QDCOUNT should be 2, got %d", msg.Header.GetQDCOUNT())
+		t.Fatalf("After adding 2 questions, QDCOUNT should be 2, got %d", msg.Header.GetQDCOUNT())
 	}
 
 	if len(msg.Questions) != 2 {
 		t.Fatalf("Expected 2 questions, got %d", len(msg.Questions))
 	}
 	if msg.Questions[0].Name != "example.com" {
-		t.Errorf("First question name doesn't match")
+		t.Fatalf("First question name doesn't match")
 	}
 	if msg.Questions[1].Name != "example.org" {
-		t.Errorf("Second question name doesn't match")
+		t.Fatalf("Second question name doesn't match")
 	}
 }
 
@@ -501,31 +501,31 @@ func TestMarshalUnmarshalHeaderValues(t *testing.T) {
 		t.Fatalf("Failed to unmarshal message: %v", err)
 	}
 	if unmarshaledMsg.Header.GetMessageID() != msg.Header.GetMessageID() {
-		t.Errorf("ID mismatch: expected 12345, got %d", unmarshaledMsg.Header.GetMessageID())
+		t.Fatalf("ID mismatch: expected 12345, got %d", unmarshaledMsg.Header.GetMessageID())
 	}
 	if unmarshaledMsg.Header.IsResponse() != msg.Header.IsResponse() {
-		t.Errorf("QR flag mismatch")
+		t.Fatalf("QR flag mismatch")
 	}
 	if unmarshaledMsg.Header.GetOpcode() != header.IQuery {
-		t.Errorf("Opcode mismatch: expected 2, got %d", unmarshaledMsg.Header.GetOpcode())
+		t.Fatalf("Opcode mismatch: expected 2, got %d", unmarshaledMsg.Header.GetOpcode())
 	}
 	if !unmarshaledMsg.Header.IsAA() {
-		t.Errorf("AA flag mismatch")
+		t.Fatalf("AA flag mismatch")
 	}
 	if !unmarshaledMsg.Header.IsTC() {
-		t.Errorf("TC flag mismatch")
+		t.Fatalf("TC flag mismatch")
 	}
 	if !unmarshaledMsg.Header.IsRD() {
-		t.Errorf("RD flag mismatch")
+		t.Fatalf("RD flag mismatch")
 	}
 	if !unmarshaledMsg.Header.IsRA() {
-		t.Errorf("RA flag mismatch")
+		t.Fatalf("RA flag mismatch")
 	}
 	if unmarshaledMsg.Header.GetZ() != 3 {
-		t.Errorf("Z bits mismatch: expected 3, got %d", unmarshaledMsg.Header.GetZ())
+		t.Fatalf("Z bits mismatch: expected 3, got %d", unmarshaledMsg.Header.GetZ())
 	}
 	if unmarshaledMsg.Header.GetRCODE() != header.ServerFailure {
-		t.Errorf("RCode mismatch: expected 3, got %d", unmarshaledMsg.Header.GetRCODE())
+		t.Fatalf("RCode mismatch: expected 3, got %d", unmarshaledMsg.Header.GetRCODE())
 	}
 }
 
@@ -553,6 +553,6 @@ func TestMessageEquality(t *testing.T) {
 	}
 
 	if !bytes.Equal(data1, data2) {
-		t.Errorf("Binary representations of identical messages don't match")
+		t.Fatalf("Binary representations of identical messages don't match")
 	}
 }

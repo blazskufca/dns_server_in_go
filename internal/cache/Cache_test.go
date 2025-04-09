@@ -28,7 +28,7 @@ func TestDNSCache_Get(t *testing.T) {
 	cache.Put("test.example.com", msg)
 	result = cache.Get("test.example.com")
 	if result == nil {
-		t.Errorf("Expected cache hit, got nil")
+		t.Fatalf("Expected cache hit, got nil")
 	}
 }
 
@@ -214,14 +214,14 @@ func TestDNSCache_MinimumTTL(t *testing.T) {
 	cache.mu.RUnlock()
 
 	if !found {
-		t.Errorf("Entry not found in cache")
+		t.Fatalf("Entry not found in cache")
 		return
 	}
 
 	expectedExpiration := time.Now().Add(200 * time.Second)
 	if expectedExpiration.Sub(entry.expiresAt) > 1*time.Second ||
 		entry.expiresAt.Sub(expectedExpiration) > 1*time.Second {
-		t.Errorf("Wrong expiration time. Expected around %v, got %v",
+		t.Fatalf("Wrong expiration time. Expected around %v, got %v",
 			expectedExpiration, entry.expiresAt)
 	}
 }
