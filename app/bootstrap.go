@@ -1,11 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Class"
 	"github.com/blazskufca/dns_server_in_go/internal/DNS_Type"
 	"github.com/blazskufca/dns_server_in_go/internal/Message"
-	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"log/slog"
 	"net"
 )
@@ -31,14 +31,8 @@ func (s *DNSServer) bootstrapRootServers() error {
 	if response == nil {
 		return fmt.Errorf("bootstrapRootServers get nil response *Message from forwardToResolver")
 	}
-	if response.Header.GetRCODE() != header.NoError {
-		return fmt.Errorf("unexpected response code from upstream: %v", response.Header.GetRCODE())
-	}
-	if !response.Header.IsResponse() {
-		return fmt.Errorf("expected QR flag to best to response but it was not - %v", response.Header.IsResponse())
-	}
-	if response.Header.GetMessageID() != query.Header.GetMessageID() {
-		return fmt.Errorf("expected message id %v but got %v", query.Header.GetMessageID(), response.Header.GetMessageID())
+	if !response.IsNoErrWithMatchingID(query.Header.GetMessageID()) {
+		return errors.New("bootstrapRootServers got invalid response from forwardToResolver")
 	}
 
 	var rootServers []RootServer
@@ -150,14 +144,8 @@ func (s *DNSServer) resolveNameserver(name string) ([]net.IP, error) {
 		return nil, fmt.Errorf("resolveNameserver got nil response from forwardToResolver")
 	}
 
-	if response.Header.GetRCODE() != header.NoError {
-		return nil, fmt.Errorf("unexpected response code from upstream: %v", response.Header.GetRCODE())
-	}
-	if !response.Header.IsResponse() {
-		return nil, fmt.Errorf("expected QR flag to best to response but it was not - %v", response.Header.IsResponse())
-	}
-	if response.Header.GetMessageID() != query.Header.GetMessageID() {
-		return nil, fmt.Errorf("expected message id %v but got %v", query.Header.GetMessageID(), response.Header.GetMessageID())
+	if !response.IsNoErrWithMatchingID(query.Header.GetMessageID()) {
+		return nil, fmt.Errorf("resolveNameserver got invalid response from forwardToResolver")
 	}
 
 	var ips []net.IP

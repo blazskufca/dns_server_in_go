@@ -197,6 +197,18 @@ func (msg *Message) AddQuestion(q question.Question) error {
 	return msg.Header.SetQDCOUNT(int(msg.Header.GetQDCOUNT()) + 1)
 }
 
+// IsNoErrWithMatchingID asserts that a response is header.Header has RCODE of header.NoError, is a response Message
+// and that the response ID  matches the query id.
+func (msg *Message) IsNoErrWithMatchingID(queryID uint16) bool {
+	if msg.Header.GetRCODE() != header.NoError {
+		return false
+	}
+	if msg.Header.GetMessageID() != queryID {
+		return false
+	}
+	return true
+}
+
 // CreateDNSQuery creates a new DNS query message
 func CreateDNSQuery(name string, qtype DNS_Type.Type, qclass DNS_Class.Class, desireRecursion bool) (Message, error) {
 	msg := Message{}

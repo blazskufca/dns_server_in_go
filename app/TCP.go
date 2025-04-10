@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/blazskufca/dns_server_in_go/internal/Message"
-	"github.com/blazskufca/dns_server_in_go/internal/header"
 	"github.com/blazskufca/dns_server_in_go/internal/utils"
 	"io"
 	"log/slog"
@@ -137,12 +136,8 @@ func (s *DNSServer) processDNSRequestTCP(data []byte) ([]byte, error) {
 		if msgData == nil {
 			return nil, fmt.Errorf("error forwarding question via TCP: message is nil")
 		}
-		if msgData.Header.GetRCODE() != header.NoError {
-			return nil, fmt.Errorf("error forwarding question via TCP: message has unexpected RCODE %v", msgData.Header.GetRCODE())
-		}
-		if msgData.Header.GetMessageID() != msg.Header.GetMessageID() {
-			return nil, fmt.Errorf("error forwading question via TCP: mismatched message ID - Sent %v but got %v",
-				msg.Header.GetMessageID(), msgData.Header.GetMessageID())
+		if !msg.IsNoErrWithMatchingID(msgData.Header.GetMessageID()) {
+			return nil, fmt.Errorf("error forwarding question via TCP: message is not a valid response")
 		}
 		msgData.Header.SetTC(false)
 		return msgData.MarshalBinary()
@@ -263,12 +258,8 @@ func (s *DNSServer) queryNameserverTCP(serverIP net.IP, query *Message.Message) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal TCP response from nameserver %s: %w", serverIP.String(), err)
 	}
-	if response.Header.GetRCODE() != header.NoError {
-		return nil, fmt.Errorf("failed to query nameserver with unexpected RCODE %v", response.Header.GetRCODE())
-	}
-	if response.Header.GetMessageID() != query.Header.GetMessageID() {
-		return nil, fmt.Errorf("failed to query nameserver with unexpected message ID: sent %v but got %v",
-			query.Header.GetMessageID(), response.Header.GetMessageID())
+	if !response.IsNoErrWithMatchingID(query.Header.GetMessageID()) {
+		return nil, fmt.Errorf("resolveNameserver got invalid response from nameserver")
 	}
 	return &response, nil
 }

@@ -487,22 +487,8 @@ func (s *DNSServer) resolveWithNameservers(domain string, questionType DNS_Type.
 		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
 	}
 
-	if nsResp.Header.GetRCODE() != header.NoError {
-		s.logger.Error("Failed to query nameserver with unexpected RCODE", slog.Any("rcode", nsResp.Header.GetRCODE()))
-		nsRespBin, err := nsResp.MarshalBinary()
-		if err != nil {
-			s.logger.Error("Failed to marshal nameserver response", slog.Any("error", err))
-			return nil, err
-		}
-		s.sendErrorResponse(nsRespBin, s.resolverAddr, nsResp.Header.GetRCODE())
-		return nil, nil
-	}
-
-	if nsResp.Header.GetMessageID() != nsQuery.Header.GetMessageID() {
-		s.logger.Error("Failed to query nameserver with unexpected message ID",
-			slog.Any("sent_id", nsQuery.Header.GetMessageID()),
-			slog.Any("got_id", nsResp.Header.GetMessageID()))
-		return s.resolveWithNameservers(domain, questionType, remainingServers, delegationCount, cnameChain)
+	if !nsResp.IsNoErrWithMatchingID(nsQuery.Header.GetMessageID()) {
+		return nil, fmt.Errorf("resolveNameserver got invalid response from nameserver")
 	}
 
 	// Check for CNAME records when not specifically looking for CNAMEs
@@ -623,8 +609,7 @@ func (s *DNSServer) handleCNAMEs(domain string, questionType DNS_Type.Type, nsRe
 			return nil
 		}
 
-		if cnameResp.Header.GetRCODE() != header.NoError ||
-			cnameQuery.Header.GetMessageID() != cnameResp.Header.GetMessageID() {
+		if !cnameResp.IsNoErrWithMatchingID(cnameQuery.Header.GetMessageID()) {
 			s.logger.Error("Invalid CNAME response",
 				slog.Any("rcode", cnameResp.Header.GetRCODE()),
 				slog.Any("sent_id", cnameQuery.Header.GetMessageID()),
@@ -777,12 +762,8 @@ func (s *DNSServer) resolveNameserverRecursively(nameserver string) ([]net.IP, e
 		return s.resolveNameserver(nameserver)
 	}
 
-	if resp.Header.GetRCODE() != header.NoError {
-		return nil, fmt.Errorf("failed to query nameserver with unexpected RCODE %v", resp.Header.GetRCODE())
-	}
-	if resp.Header.GetMessageID() != query.Header.GetMessageID() {
-		return nil, fmt.Errorf("failed to query nameserver with unexpected message ID: sent %v but got %v",
-			query.Header.GetMessageID(), resp.Header.GetMessageID())
+	if !resp.IsNoErrWithMatchingID(query.Header.GetMessageID()) {
+		return nil, fmt.Errorf("resolveNameserver got invalid response from forwardToResolver")
 	}
 
 	var ips []net.IP
@@ -859,15 +840,9 @@ func (s *DNSServer) queryNameserver(serverIP net.IP, query *Message.Message) (*M
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response from nameserver %s: %w", serverIP.String(), err)
 	}
-
-	if response.Header.GetRCODE() != header.NoError {
-		return nil, fmt.Errorf("failed to query nameserver with unexpected RCODE %v", response.Header.GetRCODE())
+	if !response.IsNoErrWithMatchingID(query.Header.GetMessageID()) {
+		return nil, fmt.Errorf("resolveNameserver got invalid response from forwardToResolver")
 	}
-	if response.Header.GetMessageID() != query.Header.GetMessageID() {
-		return nil, fmt.Errorf("failed to query nameserver with unexpected message ID: sent %v but got %v",
-			query.Header.GetMessageID(), response.Header.GetMessageID())
-	}
-
 	if response.Header.IsTC() {
 		return s.queryNameserverTCP(serverIP, query)
 	}
