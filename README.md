@@ -1,4 +1,4 @@
-# DNS Server in Go ![Lint and Test pipeline](https://github.com/blazskufca/dns_server_in_go/actions/workflows/ci.yaml/badge.svg)
+# DNS Server in Go ![Lint and Test pipeline](https://github.com/blazskufca/dns_server_in_go/actions/workflows/ci.yaml/badge.svg) ![Go Report Card](https://goreportcard.com/badge/github.com/blazskufca/dns_server_in_go)
 
 This repository implements a (_mostly_ complete per [RFC 1035](https://datatracker.ietf.org/doc/html/rfc1035)) forwarding and recursive DNS resolver.
 ```text
